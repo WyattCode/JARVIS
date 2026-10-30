@@ -1,0 +1,10 @@
+.stellar-canvas{position:absolute;inset:-17%;width:134%;height:134%;z-index:2;pointer-events:none;transform:perspective(400px) rotateY(var(--head-yaw,var(--yaw,0deg))) rotateX(var(--head-pitch,var(--pitch,0deg)));transition:transform var(--gaze-duration,.65s) cubic-bezier(.22,.8,.3,1)}
+.companion[data-stellar="live"]:not(.orb)::after{background:none;filter:none}
+.orb[data-stellar="live"] .core{background:none;filter:none}
+.companion[data-stellar="live"] .sun-face{opacity:0;z-index:3}
+.constellation[data-stellar="live"] .entity,.constellation[data-stellar="live"] .navigation-orbit,.constellation[data-stellar="live"] .satellite{opacity:0}
+.constellation .stellar-canvas,.companion:not(.orb){animation:none}
+.motion-paused .stellar-canvas{animation-play-state:paused!important}
+@media(prefers-reduced-motion:reduce){.stellar-canvas{animation:none!important;transition:none!important}}
+
+[data-stellar="live"] .light-field,[data-stellar="live"] .sun-face,[data-stellar="live"] .orbit,[data-stellar="live"] .core{opacity:0!important}

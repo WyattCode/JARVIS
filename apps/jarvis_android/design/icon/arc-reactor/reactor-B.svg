@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="18 18 72 72" role="img" aria-label="B 放射分区"><rect x="18" y="18" width="72" height="72" fill="#000000"/><path d="M45.8809,28.2496 A27,27 0 0 1 62.1191,28.2496" fill="none" stroke="#ECF8FC" stroke-width="2.15" stroke-linecap="round"/>
+<path d="M66.4672,30.0507 A27,27 0 0 1 77.9493,41.5328" fill="none" stroke="#ECF8FC" stroke-width="2.15" stroke-linecap="round"/>
+<path d="M79.7504,45.8809 A27,27 0 0 1 79.7504,62.1191" fill="none" stroke="#ECF8FC" stroke-width="2.15" stroke-linecap="round"/>
+<path d="M77.9493,66.4672 A27,27 0 0 1 66.4672,77.9493" fill="none" stroke="#ECF8FC" stroke-width="2.15" stroke-linecap="round"/>
+<path d="M62.1191,79.7504 A27,27 0 0 1 45.8809,79.7504" fill="none" stroke="#ECF8FC" stroke-width="2.15" stroke-linecap="round"/>
+<path d="M41.5328,77.9493 A27,27 0 0 1 30.0507,66.4672" fill="none" stroke="#ECF8FC" stroke-width="2.15" stroke-linecap="round"/>
+<path d="M28.2496,62.1191 A27,27 0 0 1 28.2496,45.8809" fill="none" stroke="#ECF8FC" stroke-width="2.15" stroke-linecap="round"/>
+<path d="M30.0507,41.5328 A27,27 0 0 1 41.5328,30.0507" fill="none" stroke="#ECF8FC" stroke-width="2.15" stroke-linecap="round"/>
+<circle cx="54" cy="54" r="18.5" fill="none" stroke="#ECF8FC" stroke-width="1.6" stroke-linecap="round"/>
+<circle cx="54" cy="54" r="8.2" fill="none" stroke="#8FDCEB" stroke-width="2.0" stroke-linecap="round"/>
+<line x1="54.0000" y1="35.0000" x2="54.0000" y2="27.6000" fill="none" stroke="#ECF8FC" stroke-width="1.9" stroke-linecap="round"/>
+<line x1="67.4350" y1="40.5650" x2="72.6676" y2="35.3324" fill="none" stroke="#ECF8FC" stroke-width="1.9" stroke-linecap="round"/>
+<line x1="73.0000" y1="54.0000" x2="80.4000" y2="54.0000" fill="none" stroke="#ECF8FC" stroke-width="1.9" stroke-linecap="round"/>
+<line x1="67.4350" y1="67.4350" x2="72.6676" y2="72.6676" fill="none" stroke="#ECF8FC" stroke-width="1.9" stroke-linecap="round"/>
+<line x1="54.0000" y1="73.0000" x2="54.0000" y2="80.4000" fill="none" stroke="#ECF8FC" stroke-width="1.9" stroke-linecap="round"/>
+<line x1="40.5650" y1="67.4350" x2="35.3324" y2="72.6676" fill="none" stroke="#ECF8FC" stroke-width="1.9" stroke-linecap="round"/>
+<line x1="35.0000" y1="54.0000" x2="27.6000" y2="54.0000" fill="none" stroke="#ECF8FC" stroke-width="1.9" stroke-linecap="round"/>
+<line x1="40.5650" y1="40.5650" x2="35.3324" y2="35.3324" fill="none" stroke="#ECF8FC" stroke-width="1.9" stroke-linecap="round"/></svg>

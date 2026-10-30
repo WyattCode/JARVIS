@@ -1,0 +1,9 @@
+{
+  "android_aapt2_compile_and_link": true,
+  "android_device_install_test": false,
+  "macos_native_composer_xcode_validation": false,
+  "icns_decode": true,
+  "iconset_dimensions": true,
+  "layer_references_exist": true,
+  "triangle_connectors_removed": false
+}

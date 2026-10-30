@@ -1,0 +1,67 @@
+LocalRouter
+Copyright 2026 Jay Leaton
+
+JARVIS (this distribution: the Flutter app in apps/jarvis_android, the deployment and the changes to
+LocalRouter), Copyright 2026 WyattCode, under the same license.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software developed by others:
+
+TensorFold (https://github.com/ashhart/TensorFold), by Ash Hart, Apache License 2.0.
+  LocalRouter's engines are built on TensorFold's CUDA runtime (a build dependency) and its NVFP4 kernels
+  (kernels/cuda/nvfp4/, copied with their provenance noted in each file); the image engine's attention is derived
+  from TensorFold's prefill attention (kernels/cuda/qwen_image/attention.cu). TensorFold's Python implementations
+  were the baselines the Zig engines were ported from and are checked against.
+
+SageAttention (https://github.com/thu-ml/SageAttention), Copyright 2024 by the SageAttention team, with
+  modifications by NVIDIA CORPORATION & AFFILIATES, as distributed in comfy-kitchen 0.2.35
+  (https://github.com/Comfy-Org/comfy-kitchen), Apache License 2.0.
+  The INT8 attention and RoPE kernels in kernels/cuda/minimax/kitchen/ are verbatim copies, headers intact.
+
+Qwen2.5 tokenizer files (tools/twin/stk_twin/h3/tokenizer/), from the Qwen team, Apache License 2.0.
+
+drama-tensorfold (https://github.com/plotarmordev/drama-tensorfold), Copyright 2026 plotarmordev, Apache License 2.0.
+  The optional Drama 3 speech tool (tools/speech/drama3/) runs that repository's launcher (recipe/pilot.py) and the
+  native server it builds: TensorFold (above) at c7137bb with drama-tensorfold's engine patch series, at commit
+  1a53b8aea738a99d3630f949b6b2a1f9389f0795. fetch.sh clones it unmodified, with its NOTICE, LICENSE and LICENSES/;
+  build.sh runs its scripts/build-engine.sh. No drama-tensorfold file is copied into LocalRouter, except as the
+  context lines of tools/speech/drama3/patches/pilot-external-admission.patch, LocalRouter's change to its
+  recipe/pilot.py (Apache License 2.0; the patched file says it was modified). The integration
+  tests' stand-in server (tests/fixtures/drama3_pilot.py) follows its HTTP contract. As its NOTICE records, the
+  engine's chunked Gated DeltaNet prefill follows SGLang 0.5.21 (Apache License 2.0) with kernels adapted from
+  flash-linear-attention (https://github.com/fla-org/flash-linear-attention, MIT License, Copyright (c) 2023-2025,
+  Songlin Yang, Yu Zhang), and the port follows the SGLang-Omni Drama 3 reference implementation (Apache License 2.0).
+
+Sidebud (https://github.com/jayleaton/sidebud), Copyright 2026 Jay Leaton.
+  The phone app in apps/mobile/ is adapted from Sidebud's Expo app (apps/mobile-app/) at commit
+  70da540b2ecd5ebae6ed8dbfeb77a52489ae1028, contributed by its owner under LocalRouter's license: the native modules
+  modules/call-session/ and modules/voice-commands/ (copied unmodified), the voice helpers (src/lib/voice/: PCM,
+  echo gate, wake gate, spoken commands), the UI components and theme, the icon and splash images, and
+  patches/react-native-audio-api@0.13.5.patch. Its session layer (Sidebud's companion protocol) is replaced by
+  LocalRouter's realtime voice protocol (src/lib/localrouter/).
+
+Model weights are not distributed with LocalRouter. Qwen-Image 2.1 (Qwen team) and MiniMax H3 (MiniMax) are downloaded
+by the installer from their publishers and remain under their own licenses.
+
+ComfyUI (https://github.com/comfyanonymous/ComfyUI) is used, optionally and only at development time, as the reference
+implementation for MiniMax H3 in the comparison tests; it is not part of LocalRouter.
+
+Qwen-Image 2.1 weights: Qwen Research License (research/evaluation only).
+  https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE
+MiniMax H3 weights: MiniMax H3 Community License Agreement (territorial and downstream use restrictions).
+  https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE
+Kitten TTS 2 weights (KittenML / Stellon Labs), used by the optional speech tool in tools/speech/kitten/ and downloaded
+  by its fetch.sh, not distributed with LocalRouter: Stellon Labs Community License. "This Stellon Labs Model is
+  licensed under the Stellon Labs Community License, Copyright © Stellon Labs Inc. All Rights Reserved." Powered by
+  Stellon Labs. Commercial use requires registration and ends above USD 1,000,000 revenue or funding; see
+  docs/dev/KITTEN-TTS2.md. https://huggingface.co/KittenML/kitten-tts-2/blob/f2eee74f4467855ad58fe16f1fb7b7df473263fd/LICENSE.md
+  Its decoder uses ResembleAI chatterbox-turbo's s3gen weights (MIT) and the kittenml package (Apache License 2.0).
+Fish Audio Drama 3 weights and codec checkpoint (fishaudio/drama-3 at e0a9218aa48888270f06ef1ed9ea67622c0e17d2), used
+  by the optional speech tool in tools/speech/drama3/ and downloaded by its fetch.sh, not distributed with LocalRouter:
+  Fish Audio Community License, Version 1.0. "These Fish Audio Materials are licensed under the Fish Audio Community
+  License, Version 1.0. Copyright © 39 AI, INC. All Rights Reserved." Built with Fish Audio. Commercial use only under
+  USD 500,000 annual revenue, and no Hosted Service (third parties generating speech, e.g. through an API) without a
+  separate licence (Section III(c)); see docs/dev/DRAMA3.md.
+  https://huggingface.co/fishaudio/drama-3/blob/e0a9218aa48888270f06ef1ed9ea67622c0e17d2/LICENSE
+These weight licences are separate from LocalRouter's software licence; installing locally does not waive them.

@@ -1,0 +1,14 @@
+// Browser installation is controlled by the OS; test our event lifecycle and fallback UI.
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const fs=require('fs'),path=require('path'),assert=require('assert');
+(async()=>{const browser=await chromium.launch();try{const p=await browser.newPage();const errors=[];p.on('pageerror',e=>errors.push(e.message));const source=fs.readFileSync(path.join(__dirname,'../src/voice/auth/pwa.js'),'utf8');
+ await p.route('**/*',r=>r.fulfill({contentType:'text/html',body:'<!doctype html><html><body><section class="pwa-install-section"><button data-install-app>添加到主屏幕</button></section></body></html>'}));
+ await p.goto('http://jarvis.test/');await p.addScriptTag({content:source});
+ const pending=()=>p.evaluate(()=>{const event=new Event('beforeinstallprompt',{cancelable:true});event.prompt=()=>{window.promptCount=(window.promptCount||0)+1;return Promise.resolve()};event.userChoice=new Promise((resolve,reject)=>{window.resolveInstall=resolve;window.rejectInstall=reject});window.dispatchEvent(event);return event.defaultPrevented});
+ assert(await pending());await p.locator('[data-install-app]').click();assert(await p.locator('[data-install-app]').isDisabled());await p.evaluate(()=>document.querySelector('[data-install-app]').click());assert.equal(await p.evaluate(()=>window.promptCount),1);assert.equal(await p.locator('#pwaInstallHelp').count(),0);
+ await p.evaluate(()=>window.resolveInstall({outcome:'dismissed'}));await p.waitForFunction(()=>!document.querySelector('[data-install-app]').disabled);assert(await p.locator('[data-install-app]').isVisible());
+ await p.locator('[data-install-app]').click();assert(await p.locator('#pwaInstallHelp').isVisible());await p.keyboard.press('Escape');assert(await p.locator('#pwaInstallHelp').isHidden());
+ assert(await pending());await p.locator('[data-install-app]').click();await p.evaluate(()=>window.rejectInstall(new Error('browser rejected')));await p.waitForFunction(()=>!document.querySelector('[data-install-app]').disabled);assert(await p.locator('#pwaInstallHelp').isVisible());await p.locator('.pwa-help-close').click();
+ assert(await pending());await p.locator('[data-install-app]').click();await p.evaluate(()=>window.resolveInstall({outcome:'accepted'}));await p.waitForFunction(()=>document.querySelector('[data-install-app]').hidden);assert(await p.locator('html').evaluate(e=>e.classList.contains('is-standalone')));assert.deepEqual(errors,[]);
+ console.log(JSON.stringify({pass:true,checks:['one pending installation prevents duplicate clicks and an overlapping help modal','dismissal restores the control without reusing the event','fallback dialog closes with Escape','failed prompt restores control and offers help','acceptance hides installation action'],errors}));
+ }finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});

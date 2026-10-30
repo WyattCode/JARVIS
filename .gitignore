@@ -1,0 +1,13 @@
+.agents/
+.zig-cache/
+zig-out/
+/data/
+*.png
+*.mp4
+!docs/assets/*.png
+zig-pkg/
+results/
+__pycache__/
+
+# Home-screen assets are required by the public manifest.
+!src/voice/pwa/*.png

@@ -1,0 +1,9 @@
+/* Shared with the existing neutral day/night theme. */
+.pwa-install-help{box-sizing:border-box;inset:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);margin:auto;color:var(--text,#ededf1);background:var(--surface,#121214);border:1px solid var(--border,#303036);border-radius:24px;padding:24px;width:min(400px,calc(100% - 32px - env(safe-area-inset-left) - env(safe-area-inset-right)));max-height:calc(100dvh - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom));overflow:auto;box-shadow:0 20px 80px #0006}
+.pwa-install-help::backdrop{background:#0007;backdrop-filter:blur(6px)}
+.pwa-install-help h2{font-size:19px;margin:0 0 12px}.pwa-install-help p{font-size:14px;line-height:1.8;color:var(--muted,#a1a1aa);margin:0 0 20px}
+.pwa-help-close{display:block;width:100%;min-height:44px;border:1px solid var(--border,#303036);border-radius:14px;background:var(--raised,#242429);color:var(--text,#ededf1);font:inherit;cursor:pointer}
+.pwa-install-link{border:0;background:transparent;color:var(--muted,#a1a1aa);font:inherit;font-size:13px;min-height:44px;padding:8px 12px;border-radius:12px;cursor:pointer}
+.pwa-install-link:hover{background:var(--raised,#242429);color:var(--text,#ededf1)}
+.pwa-install-link:focus-visible,.pwa-help-close:focus-visible{outline:2px solid var(--focus,#8fdceb);outline-offset:3px}
+.is-standalone [data-install-app],.is-standalone .pwa-install-section{display:none!important}

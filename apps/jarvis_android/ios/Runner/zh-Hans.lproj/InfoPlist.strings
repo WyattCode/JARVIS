@@ -1,0 +1,5 @@
+/* Shown in the system's own dialogs and on the Home Screen. */
+"CFBundleDisplayName" = "JARVIS";
+"NSCameraUsageDescription" = "贾维斯需要使用相机来拍摄照片并发给模型。";
+"NSMicrophoneUsageDescription" = "贾维斯需要使用麦克风来进行语音对话。";
+"NSPhotoLibraryAddUsageDescription" = "贾维斯需要把生成的图片和视频保存到你的相册。";

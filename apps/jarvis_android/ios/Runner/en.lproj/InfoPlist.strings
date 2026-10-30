@@ -1,0 +1,5 @@
+/* Shown in the system's own dialogs and on the Home Screen. */
+"CFBundleDisplayName" = "JARVIS";
+"NSCameraUsageDescription" = "JARVIS uses the camera to take pictures you send to the model.";
+"NSMicrophoneUsageDescription" = "JARVIS uses the microphone for voice conversations.";
+"NSPhotoLibraryAddUsageDescription" = "JARVIS saves the pictures and videos you generate to your photo library.";

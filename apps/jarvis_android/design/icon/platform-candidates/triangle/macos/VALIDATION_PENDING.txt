@@ -1,0 +1,1 @@
+Icon Composer source prepared on Linux. macOS 27 / Icon Composer 2.0 native open, export and Xcode compilation remain pending; this is not a native Apple-rendered validation result.

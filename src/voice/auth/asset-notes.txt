@@ -1,0 +1,9 @@
+Jarvis stellar core. Generated with the built-in image_gen tool, transparent background. Original source kept in this directory. WebP, PNG and ICO files are deployment renditions of the same asset.
+Prompt: A luminous interstellar AI core, pearl-white and icy-cyan plasma sphere with flowing magnetic filaments, champagne-gold and frosted-cyan orbital trajectories. Optimistic space exploration, transparent margins, no black surfaces, no helmet, no humanoid face, eyes, smile, mouth, text or watermark.
+
+Design reference (principles only, no third-party runtime): https://github.com/anthropics/skills/tree/main/skills/frontend-design
+Login assets use exact public routes; generated original and this provenance file are not publicly served. Existing voice gateway icons use the PNG rendition for compatibility without restarting the LAN listener.
+
+2026-10-24: login jarvis-core.webp is now the rendered phase-zero frame of stellar.js to avoid an illustration-to-canvas flash. The generated illustration original remains in jarvis-core-original.png; favicon/PNG assets retain the original illustration.
+
+2026-10-24: brand-icon.webp is a 96px WebP rendition of the existing icon.svg embedded bitmap. The login template embeds this and the phase-zero poster; regenerate with deploy/jarvis/sync_login_assets.py. No new external image fetch is required for these critical visuals.

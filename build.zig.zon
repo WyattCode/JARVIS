@@ -1,0 +1,13 @@
+.{
+    .name = .localrouter,
+    .version = "0.1.0",
+    .fingerprint = 0xd00c82bdc3d22d0e, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .tensorfold = .{
+            .url = "git+https://github.com/ashhart/TensorFold.git#e7c523ebfa16b8094cf9e35e3773a7d25befcc5b",
+            .hash = "tensorfold-1.0.7-CphTLULywQAUe2LxgT29-AserW8gMmK9C-ltOxIaw1pG",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

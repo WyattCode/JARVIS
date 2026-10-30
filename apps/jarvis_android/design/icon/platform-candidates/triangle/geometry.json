@@ -1,0 +1,51 @@
+{
+  "name": "JarvisTriangle",
+  "title": "三角环核",
+  "source": "D-A，去掉圆与三角之间三条连接线",
+  "parts": [
+    {
+      "type": "circle",
+      "r": 27,
+      "width": 1.8,
+      "color": "#ECF8FC"
+    },
+    {
+      "type": "polygon",
+      "points": [
+        [
+          35.5,
+          43.3
+        ],
+        [
+          72.5,
+          43.3
+        ],
+        [
+          54,
+          75.3
+        ]
+      ],
+      "width": 2.0,
+      "color": "#ECF8FC"
+    },
+    {
+      "type": "polygon",
+      "points": [
+        [
+          46,
+          49.4
+        ],
+        [
+          62,
+          49.4
+        ],
+        [
+          54,
+          63.3
+        ]
+      ],
+      "width": 2.0,
+      "color": "#8FDCEB"
+    }
+  ]
+}

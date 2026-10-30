@@ -1,0 +1,98 @@
+// Size/export the generated alpha masters; Android applies its own launcher mask.
+import 'dart:io';
+import 'dart:ui' as ui;
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  testWidgets('Export fixed black night icon resources and mask previews', (
+    t,
+  ) async {
+    await t.runAsync(() async {
+      Future<void> save(
+        ui.Image source,
+        int size,
+        String file, {
+        Color? background,
+        String? mask,
+      }) async {
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(recorder);
+        final bounds = Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble());
+        if (mask == 'circle') {
+          canvas.clipPath(Path()..addOval(bounds));
+        }
+        if (mask == 'rounded') {
+          canvas.clipRRect(
+            RRect.fromRectAndRadius(bounds, Radius.circular(size * .23)),
+          );
+        }
+        if (background != null) canvas.drawColor(background, BlendMode.src);
+        final target = background == null ? bounds : bounds.deflate(size * .11);
+        canvas.drawImageRect(
+          source,
+          Rect.fromLTWH(
+            0,
+            0,
+            source.width.toDouble(),
+            source.height.toDouble(),
+          ),
+          target,
+          Paint()..filterQuality = FilterQuality.high,
+        );
+        final picture = recorder.endRecording();
+        final image = await picture.toImage(size, size);
+        final png = await image.toByteData(format: ui.ImageByteFormat.png);
+        final dest = File(file);
+        await dest.parent.create(recursive: true);
+        await dest.writeAsBytes(png!.buffer.asUint8List());
+        image.dispose();
+        picture.dispose();
+      }
+
+      final bytes = await File('design/icon/v0.2.2/jarvis-night-master.png')
+          .readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final source = frame.image;
+      await save(source, 512, 'assets/jarvis-icon-night.png');
+      for (final resource in ['drawable-nodpi', 'drawable-night-nodpi']) {
+        await save(
+          source,
+          432,
+          'android/app/src/main/res/$resource/jarvis_icon_art.png',
+        );
+      }
+      for (final density in [
+        ('mdpi', 48),
+        ('hdpi', 72),
+        ('xhdpi', 96),
+        ('xxhdpi', 144),
+        ('xxxhdpi', 192),
+      ]) {
+        for (final prefix in ['mipmap', 'mipmap-night']) {
+          await save(
+            source,
+            density.$2,
+            'android/app/src/main/res/$prefix-${density.$1}/ic_launcher.png',
+            background: Colors.black,
+          );
+        }
+      }
+      for (final mask in ['circle', 'rounded']) {
+        for (final size in [48, 96, 512]) {
+          await save(
+            source,
+            size,
+            'design/icon/v0.2.2/night-$mask-$size.png',
+            background: Colors.black,
+            mask: mask,
+          );
+        }
+      }
+      source.dispose();
+      codec.dispose();
+    });
+  });
+}

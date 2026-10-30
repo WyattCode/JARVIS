@@ -1,0 +1,24 @@
+{
+  "day": {
+    "size": [
+      1254,
+      1254
+    ],
+    "alpha_range": [
+      0,
+      255
+    ],
+    "master_kept": true
+  },
+  "night": {
+    "size": [
+      1254,
+      1254
+    ],
+    "alpha_range": [
+      0,
+      255
+    ],
+    "master_kept": true
+  }
+}

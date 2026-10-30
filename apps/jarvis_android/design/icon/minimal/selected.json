@@ -1,0 +1,10 @@
+{
+  "variant": "C",
+  "name": "Visor",
+  "background": "#000000",
+  "colors": [
+    "#FFFFFF",
+    "#80D7E4"
+  ],
+  "raster_art_replaced_by_vector": true
+}

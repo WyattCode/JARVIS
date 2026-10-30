@@ -1,0 +1,7 @@
+{
+  "normal_icon_mode": "fixed-night",
+  "same_art_in_system_light_and_dark": true,
+  "background": "#000000",
+  "fallback_density_variants_identical": true,
+  "historical_day_art_kept": true
+}

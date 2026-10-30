@@ -1,0 +1,16 @@
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const fs=require('fs'),path=require('path'),assert=require('assert');
+(async()=>{const b=await chromium.launch({headless:true});try{
+ const c=await b.newContext({viewport:{width:980,height:539},hasTouch:true,isMobile:true,reducedMotion:'reduce'}),p=await c.newPage(),errors=[];p.on('pageerror',e=>errors.push(e.message));
+ await p.addInitScript(()=>{window.testViewport={width:925.1166,height:509.1333,scale:.93697};for(const k of ['width','height','scale'])Object.defineProperty(visualViewport,k,{configurable:true,get:()=>testViewport[k]})});
+ await p.route('**/*',r=>{const n=new URL(r.request().url()).pathname;return r.fulfill(n==='/voice'?{contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../src/voice/voice.html'),'utf8')}:{json:n==='/v1/models'?{data:[{id:'chat',kind:'chat'}]}:n==='/v1/tools'?{data:[{id:'chat',kind:'chat',state:'ready'}]}:{enabled:false}})});
+ await p.goto('https://jarvis.test/voice');await p.waitForFunction(()=>jarvis.ready);
+ const metrics=()=>p.evaluate(()=>{const box=s=>document.querySelector(s).getBoundingClientRect();return{right:box('.app').right,composer:box('.box').right,settings:box('#gear').right,cards:Math.max(...[...document.querySelectorAll('.sugg button')].map(e=>e.getBoundingClientRect().bottom)),composerTop:box('.composer').top}});
+ const first=await metrics();for(const k of ['right','composer','settings'])assert(first[k]<=925.2,JSON.stringify(first));assert(first.cards<first.composerTop,JSON.stringify(first));
+ await p.evaluate(()=>{testViewport.width=980;testViewport.height=539;visualViewport.dispatchEvent(new Event('resize'))});await p.waitForFunction(()=>document.querySelector('.app').getBoundingClientRect().width>979);
+ await p.setViewportSize({width:980,height:251});await p.evaluate(()=>{testViewport.width=925.1166;testViewport.height=237.15;visualViewport.dispatchEvent(new Event('resize'))});await p.waitForFunction(()=>Math.abs(parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--app-h'))-237.15)<.1);
+ const keyboard=await p.locator('.box').boundingBox();assert(keyboard.y>=0&&keyboard.y+keyboard.height<=237.2,JSON.stringify(keyboard));
+ await p.setViewportSize({width:980,height:539});await p.evaluate(()=>{testViewport.width=980;testViewport.height=539;visualViewport.dispatchEvent(new Event('resize'))});await p.waitForFunction(()=>document.querySelector('.app').getBoundingClientRect().width>979);
+ await p.evaluate(()=>{testViewport.width=490;testViewport.scale=2;visualViewport.dispatchEvent(new Event('resize'))});await p.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));assert((await metrics()).right>979,'intentional pinch zoom must not reflow the page');
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({pass:true,first,checks:['controls fit a visual viewport narrower than desktop layout viewport','home cards stay above composer','toolbar viewport expansion restores width','keyboard and native toolbar leave the full composer visible','intentional pinch zoom stays under browser control']}));
+ }finally{await b.close()}})().catch(e=>{console.error(e);process.exitCode=1});

@@ -1,0 +1,6 @@
+const vm=require('vm'),fs=require('fs'),assert=require('assert'),path=require('path');
+const html=fs.readFileSync(path.join(__dirname,'../src/voice/voice.html'),'utf8');const code=html.slice(html.indexOf('function iosWebKitAudio()'),html.indexOf('async function voiceStart()'));
+function profile(userAgent,platform,points,mode){const c={navigator:{userAgent,platform,maxTouchPoints:points},S:{mode}};vm.createContext(c);vm.runInContext(code,c);return JSON.parse(JSON.stringify(c.microphoneConstraints()))}
+for(const [ua,platform,touches]of [['iPhone AppleWebKit Version/27.1 Safari','iPhone',5],['Mozilla/5.0 Macintosh AppleWebKit Version/27.1 Safari','MacIntel',5]]){assert.equal(profile(ua,platform,touches,'ptt').audio.echoCancellation,false);assert.equal(profile(ua,platform,touches,'ptt').audio.autoGainControl,false);assert.equal(profile(ua,platform,touches,'vad').audio.echoCancellation,true)}
+for(const [ua,p,t]of [['Android AppleWebKit Chrome','Linux',5],['Macintosh AppleWebKit Safari','MacIntel',0]])assert.equal(profile(ua,p,t,'ptt').audio.echoCancellation,true);
+console.log(JSON.stringify({pass:true,checks:['iPhone PTT bypasses WebKit echo-processing path','iPad desktop UA receives same protection','hands-free keeps echo protection','other platforms preserve capture processing']}));
