@@ -89,3 +89,8 @@ LR_URL=https://<box>.<tailnet>.ts.net:10443 LR_TOKEN=<token> pnpm e2e    # or LR
 - `src/app/`, `src/components/`: the screens (pair, home with chat, call and reel, settings) and their components.
 
 Voice capture, playback and audio routing need a check on a real phone whenever they change.
+
+## Images
+
+The icon and splash images in `assets/images/` are placeholders made from the JARVIS icon, so the app builds
+from a clone. Replace them with your own artwork.
