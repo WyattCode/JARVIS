@@ -130,9 +130,16 @@ class ModelInfo {
     this.kind = 'chat',
     this.voices = const [],
     this.defaultVoice = '',
+    this.voiceCatalogRevision = 0,
+    this.voiceDefaultRevision = 0,
     this.metadata = const {},
   });
   final String id, name, kind, defaultVoice;
+
+  /// What the server says about a speech engine's voices: [voices] is in the order to show, [defaultVoice] is the one
+  /// to start with, and the revisions say when the list ([voiceCatalogRevision]) or the default ([voiceDefaultRevision])
+  /// was last changed there. Nothing about voices is decided in the app.
+  final int voiceCatalogRevision, voiceDefaultRevision;
   final List<VoiceInfo> voices;
   final Map<String, dynamic> metadata;
   bool get imageInput =>
@@ -142,26 +149,13 @@ class ModelInfo {
       );
   bool get pdfInput => metadata['jarvis']?['pdf_text'] == true;
   factory ModelInfo.fromJson(Map<String, dynamic> j) {
-    if (j['id'] == 'fishaudio/drama-3' && j['kind'] == 'speech') {
-      final voices = List<dynamic>.from(j['voices'] as List? ?? []);
-      String voiceId(dynamic v) => v is String ? v : v['id'] as String;
-      final atlas = voices.where((v) => voiceId(v) == 'zh-xingheng');
-      if (atlas.isNotEmpty) {
-        j = {
-          ...j,
-          'default_voice': 'zh-xingheng',
-          'voices': [
-            atlas.first,
-            ...voices.where((v) => voiceId(v) != 'zh-xingheng'),
-          ],
-        };
-      }
-    }
     return ModelInfo(
       j['id'] as String,
       (j['name'] ?? j['id']) as String,
       kind: j['kind'] as String? ?? 'chat',
       defaultVoice: j['default_voice'] as String? ?? '',
+      voiceCatalogRevision: _revision(j['voice_catalog_revision']),
+      voiceDefaultRevision: _revision(j['voice_default_revision']),
       metadata: j,
       voices: (j['voices'] as List? ?? [])
           .map(
@@ -178,6 +172,8 @@ class ModelInfo {
     );
   }
 }
+
+int _revision(Object? value) => value is num && value >= 0 ? value.toInt() : 0;
 
 class ChatDelta {
   const ChatDelta({

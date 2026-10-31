@@ -203,9 +203,15 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
 
   // MARK: Session and engine
 
-  private func activateSession() throws {
+  private func activateSession(capturing: Bool) throws {
     let session = AVAudioSession.sharedInstance()
-    try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+    if capturing {
+      try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+    } else {
+      // A voice try-out only plays. In the call's voice-chat mode, without the echo-cancelling input that goes with it,
+      // the same clip came out quieter than in the call; plain playback is at the normal media volume.
+      try session.setCategory(.playback, mode: .default, options: [])
+    }
     try session.setActive(true)
     installObservers()
   }
@@ -262,7 +268,7 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
 
   private func configure(rate: Int, epoch: Int, capture: Bool?) throws {
     guard (8000...192000).contains(rate) else { throw AudioError.badRate }
-    try activateSession()
+    try activateSession(capturing: capture != nil)
     if capture != nil { try awaitInput() }
     teardownEngine()
     self.rate = rate

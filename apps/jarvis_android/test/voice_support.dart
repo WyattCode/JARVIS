@@ -40,6 +40,13 @@ class VoiceApi extends FakeApi {
   @override
   Future<Uint8List> preview(VoiceInfo voice, String model) =>
       previews.putIfAbsent(voice.id, () => Completer<Uint8List>()).future;
+
+  final synthesized = <String>[];
+  @override
+  Future<Uint8List> synthesize(VoiceInfo voice, String model) async {
+    synthesized.add(voice.id);
+    return wavBytes();
+  }
 }
 
 class FakeAudio extends AudioDevice {

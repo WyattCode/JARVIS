@@ -12,7 +12,6 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../net/jarvis_api.dart' show JarvisException;
@@ -39,6 +38,7 @@ import '../state/jarvis_controller.dart';
 import 'motion.dart';
 import 'design_tokens.dart';
 import 'markdown_style.dart';
+import 'reply_markdown.dart';
 
 const _linkSchemes = ['https', 'http', 'mailto', 'tel'];
 
@@ -955,7 +955,10 @@ class JarvisHome extends StatefulWidget {
 
 class _JarvisHomeState extends State<JarvisHome> with TickerProviderStateMixin {
   bool? showDocked;
-  bool drawerOpen = false;
+
+  /// Whether the conversation drawer is open. A notifier, not a field read in [build]: opening or closing the drawer
+  /// rebuilt the whole page (every message of the chat) in its first frame, and only a few small things depend on it.
+  final drawerOpen = ValueNotifier<bool>(false);
   bool? lastDefault;
   final scaffold = GlobalKey<ScaffoldState>();
   final paneBounds = GlobalKey(), composerBounds = GlobalKey();
@@ -1213,6 +1216,7 @@ class _JarvisHomeState extends State<JarvisHome> with TickerProviderStateMixin {
     // The curve listens to the fold controller: it goes first.
     _headerCurve?.dispose();
     headerFold?.dispose();
+    drawerOpen.dispose();
     searchField.dispose();
     // Leaving the chat (sign-out) drops the videos that were downloaded for playing.
     unawaited(clearVideoCache());
@@ -1708,8 +1712,20 @@ class _JarvisHomeState extends State<JarvisHome> with TickerProviderStateMixin {
                             ],
                           ),
                           onTap: () {
+                            final same = c.id == widget.controller.selectedId;
                             widget.controller.select(c.id);
-                            if (drawer) closeDrawer();
+                            if (!drawer) return;
+                            // The chat that opens is laid out whole in its first frame (a long one takes several frames'
+                            // time): the drawer starts closing after that frame, not inside it, so it does not start with a jump.
+                            if (same) {
+                              closeDrawer();
+                            } else {
+                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                if (mounted) closeDrawer();
+                              });
+                              // The drawer must close even if the selection somehow asked for no frame.
+                              WidgetsBinding.instance.scheduleFrame();
+                            }
                           },
                         ),
                       ),
@@ -2205,7 +2221,7 @@ class _JarvisHomeState extends State<JarvisHome> with TickerProviderStateMixin {
           FocusManager.instance.primaryFocus?.unfocus();
           setState(() => showDocked = !docked);
         } else if (rail &&
-            (scaffold.currentState?.isDrawerOpen ?? drawerOpen)) {
+            (scaffold.currentState?.isDrawerOpen ?? drawerOpen.value)) {
           // The side strip stays on top of the open drawer, so the same button closes it again.
           scaffold.currentState?.closeDrawer();
         } else {
@@ -2660,18 +2676,23 @@ class _JarvisHomeState extends State<JarvisHome> with TickerProviderStateMixin {
           );
         },
       );
-      return PopScope(
-        canPop: !widget.controller.voice.open && !drawerOpen,
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) {
-            if (JarvisActionMenu.closeOpen()) return;
-            if (drawerOpen) {
-              scaffold.currentState?.closeDrawer();
-            } else if (widget.controller.voice.open) {
-              widget.controller.voice.minimize();
+      return ValueListenableBuilder<bool>(
+        valueListenable: drawerOpen,
+        // The page is the same widget whether the drawer is open or not: only the back-gesture rule follows it.
+        builder: (context, open, page) => PopScope(
+          canPop: !widget.controller.voice.open && !open,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) {
+              if (JarvisActionMenu.closeOpen()) return;
+              if (open) {
+                scaffold.currentState?.closeDrawer();
+              } else if (widget.controller.voice.open) {
+                widget.controller.voice.minimize();
+              }
             }
-          }
-        },
+          },
+          child: page!,
+        ),
         child: Stack(
           children: [
             TickerMode(
@@ -2684,7 +2705,7 @@ class _JarvisHomeState extends State<JarvisHome> with TickerProviderStateMixin {
                     key: scaffold,
                     onDrawerChanged: (open) {
                       if (open) FocusManager.instance.primaryFocus?.unfocus();
-                      setState(() => drawerOpen = open);
+                      drawerOpen.value = open;
                     },
                     resizeToAvoidBottomInset: true,
                     // Keep the drawer controller alive so its internal open
@@ -2692,8 +2713,10 @@ class _JarvisHomeState extends State<JarvisHome> with TickerProviderStateMixin {
                     drawerEnableOpenDragGesture: !layout.docked,
                     // While it slides shut it is a picture: a touch would make the drawer catch it again (reopening it, or
                     // tapping a row twice).
-                    drawer: IgnorePointer(
-                      ignoring: !drawerOpen,
+                    drawer: ValueListenableBuilder<bool>(
+                      valueListenable: drawerOpen,
+                      builder: (context, open, drawer) =>
+                          IgnorePointer(ignoring: !open, child: drawer),
                       child: Drawer(
                         // Outer display of a foldable: the conversation drawer is 21% wider (10% twice).
                         width: drawerWidth(
@@ -2743,59 +2766,66 @@ class _JarvisHomeState extends State<JarvisHome> with TickerProviderStateMixin {
               ),
             ),
             Positioned.fill(
-              child: CompletedWorksPresenter(
-                controller: widget.controller,
-                allowPresentation: !drawerOpen,
-                onCancelTask: widget.onCancelTask,
-                openSettings: widget.openSettings,
+              child: ValueListenableBuilder<bool>(
+                valueListenable: drawerOpen,
+                builder: (context, open, overlay) => CompletedWorksPresenter(
+                  controller: widget.controller,
+                  allowPresentation: !open,
+                  onCancelTask: widget.onCancelTask,
+                  openSettings: widget.openSettings,
+                  child: overlay!,
+                ),
                 child: VoiceOverlay(
                   controller: widget.controller,
                   open: widget.controller.voice.open,
                 ),
               ),
             ),
-            DuoRail(
-              // One long-lived strip, above the call page: while the call is open it switches to the call's buttons
-              // (the native view animates the change) instead of being replaced by the call page's own strip.
-              top: widget.controller.voice.open
-                  ? voiceCallRail(
-                      context,
-                      widget.controller,
-                      onCancelTask: widget.onCancelTask,
-                      openSettings: widget.openSettings,
-                    ).top
-                  : [
-                      DuoRailAction(
-                        id: 'sidebar',
-                        icon: Icons.menu,
-                        symbol: 'sidebar.leading',
-                        label: docked || drawerOpen ? '收起会话' : '展开会话',
-                        onPressed: toggleSidebar,
-                      ),
-                      DuoRailAction(
-                        id: 'new-chat',
-                        icon: Icons.edit_square,
-                        symbol: 'square.and.pencil',
-                        label: '新建会话',
-                        onPressed: newChat,
-                      ),
-                    ],
-              bottom: widget.controller.voice.open
-                  ? voiceCallRail(
-                      context,
-                      widget.controller,
-                      onCancelTask: widget.onCancelTask,
-                      openSettings: widget.openSettings,
-                    ).bottom
-                  : [
-                      DuoRailAction(
-                        id: 'settings',
-                        icon: Icons.settings_outlined,
-                        symbol: 'gearshape',
-                        label: '设置',
-                        onPressed: settings,
-                      ),
-                    ],
+            ValueListenableBuilder<bool>(
+              valueListenable: drawerOpen,
+              builder: (context, open, _) => DuoRail(
+                // One long-lived strip, above the call page: while the call is open it switches to the call's buttons
+                // (the native view animates the change) instead of being replaced by the call page's own strip.
+                top: widget.controller.voice.open
+                    ? voiceCallRail(
+                        context,
+                        widget.controller,
+                        onCancelTask: widget.onCancelTask,
+                        openSettings: widget.openSettings,
+                      ).top
+                    : [
+                        DuoRailAction(
+                          id: 'sidebar',
+                          icon: Icons.menu,
+                          symbol: 'sidebar.leading',
+                          label: docked || open ? '收起会话' : '展开会话',
+                          onPressed: toggleSidebar,
+                        ),
+                        DuoRailAction(
+                          id: 'new-chat',
+                          icon: Icons.edit_square,
+                          symbol: 'square.and.pencil',
+                          label: '新建会话',
+                          onPressed: newChat,
+                        ),
+                      ],
+                bottom: widget.controller.voice.open
+                    ? voiceCallRail(
+                        context,
+                        widget.controller,
+                        onCancelTask: widget.onCancelTask,
+                        openSettings: widget.openSettings,
+                      ).bottom
+                    : [
+                        DuoRailAction(
+                          id: 'settings',
+                          icon: Icons.settings_outlined,
+                          symbol: 'gearshape',
+                          label: '设置',
+                          onPressed: settings,
+                        ),
+                      ],
+              ),
             ),
           ],
         ),
@@ -3921,10 +3951,11 @@ class _ChatPanelState extends State<ChatPanel> {
   /// (selectable text per block cannot). Right-to-left replies lay out right to left.
   Widget _replyText(BuildContext context, ChatMessage m, double fontSize) {
     final body = SelectionArea(
-      child: MarkdownBody(
-        styleSheet: chatMarkdownStyle(context, fontSize),
-        builders: chatMarkdownBuilders(fontSize),
-        data: m.text,
+      // Finished blocks of the reply keep their widgets: while it streams in only the last block is parsed and built.
+      child: ReplyMarkdown(
+        key: ValueKey('reply-${m.id}'),
+        text: m.text,
+        fontSize: fontSize,
         onTapLink: (text, href, title) {
           final uri = Uri.tryParse(href ?? '');
           if (uri != null && _linkSchemes.contains(uri.scheme)) {

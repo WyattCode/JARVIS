@@ -7,8 +7,11 @@ class ChatSettings {
   String instructions = '';
   String apiKey = '';
   String speechModel = '';
-  final Map<String, String> voices = {'fishaudio/drama-3': 'zh-xingheng'};
-  int atlasVoiceDefaultRevision = 1;
+  final Map<String, String> voices = {};
+
+  /// The server's voice-default revision already applied here, by `<server>|<speech model>`: a default the server
+  /// changes is taken once, and the voice the user picks afterwards is kept.
+  final Map<String, int> voiceDefaultRevisions = {};
   String voiceMode = 'ptt';
   String language = '';
   String transcriptionPrompt = '';
@@ -26,7 +29,7 @@ class ChatSettings {
     'apiKey': apiKey,
     'speechModel': speechModel,
     'voices': voices,
-    'atlasVoiceDefaultRevision': atlasVoiceDefaultRevision,
+    'voiceDefaultRevisions': voiceDefaultRevisions,
     'voiceMode': voiceMode,
     'language': language,
     'transcriptionPrompt': transcriptionPrompt,
@@ -49,9 +52,12 @@ class ChatSettings {
     speechModel = j['speechModel'] as String? ?? '';
     voices.clear();
     voices.addAll((j['voices'] as Map? ?? {}).cast<String, String>());
-    atlasVoiceDefaultRevision = 1;
-    if (j['atlasVoiceDefaultRevision'] != 1) {
-      voices['fishaudio/drama-3'] = 'zh-xingheng';
+    voiceDefaultRevisions.clear();
+    for (final e in (j['voiceDefaultRevisions'] as Map? ?? {}).entries) {
+      final value = e.value;
+      if (e.key is String && value is num && value > 0) {
+        voiceDefaultRevisions[e.key as String] = value.toInt();
+      }
     }
     voiceMode = j['voiceMode'] == 'vad' ? 'vad' : 'ptt';
     final savedLanguage = j['language'] as String? ?? '';

@@ -83,6 +83,8 @@ class _SettingsPageState extends State<SettingsPage> {
     super.initState();
     tokenFocus.addListener(tokensBlur);
     scrollController.addListener(trackScrolled);
+    // The voices are the server's: look them up again whenever the settings open.
+    unawaited(widget.controller.refreshVoiceCatalog());
   }
 
   void trackScrolled() => scrolled.value =

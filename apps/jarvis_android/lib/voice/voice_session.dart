@@ -144,6 +144,9 @@ class VoiceSession extends ChangeNotifier {
   }
 
   bool get active => _wanted;
+
+  /// A call is being set up (the microphone permission may still be asked): not [active] yet, but its voice is final.
+  bool get starting => _starting;
   bool get replying => _response != null && !thinking && lastBot.isNotEmpty;
   bool get expressing => !previewing && (speaking || replying);
   bool typed(String text) {
@@ -981,7 +984,16 @@ class VoiceSession extends ChangeNotifier {
       previewVoice = voice.id;
       _changed();
       try {
-        final clip = PcmClip.wav(await api.preview(voice, engine));
+        // The server's clip is played as it is, but one this app cannot decode (not 16-bit mono WAV) is replaced by the
+        // voice speaking the same sentence, rather than failing the try-out.
+        final bytes = await api.preview(voice, engine);
+        PcmClip clip;
+        try {
+          clip = PcmClip.wav(bytes);
+        } on FormatException {
+          if (voice.preview == null) rethrow;
+          clip = PcmClip.wav(await api.synthesize(voice, engine));
+        }
         if (preview != _previewRun || !previewing) return;
         await audio.preview(clip);
         if (preview != _previewRun) return;

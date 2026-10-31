@@ -248,11 +248,9 @@ class JarvisController extends ChangeNotifier {
       if (!chats.any((m) => m.id == model)) model = chats.first.id;
       if (settings.speechModel.isEmpty) {
         final speech = models.where((m) => m.kind == 'speech').firstOrNull;
-        if (speech != null) {
-          settings.speechModel = speech.id;
-          settings.voices.putIfAbsent(speech.id, () => speech.defaultVoice);
-        }
+        if (speech != null) settings.speechModel = speech.id;
       }
+      _applyVoiceDefaults();
       try {
         final skill = await api.modelSkill();
         if (run != _catalogEpoch || _disposed) return;
@@ -286,6 +284,72 @@ class JarvisController extends ChangeNotifier {
         _changed();
       }
     }
+  }
+
+  /// Takes the voice the server names as default, once per revision of that default (kept by server and speech
+  /// engine): the voice the user picks afterwards stays. A voice is also chosen when none is stored yet. A call in
+  /// progress keeps its voice; the next refresh takes the default then.
+  void _applyVoiceDefaults() {
+    if (_voice?.active == true || _voice?.starting == true) return;
+    final server = api.endpoint.origin;
+    final picks = <String, String>{}, applied = <String, int>{};
+    for (final m in models.where((m) => m.kind == 'speech')) {
+      final key = '$server|${m.id}';
+      final known =
+          m.defaultVoice.isNotEmpty &&
+          m.voices.any((v) => v.id == m.defaultVoice);
+      if (!known) continue;
+      final newer =
+          m.voiceDefaultRevision > (settings.voiceDefaultRevisions[key] ?? 0);
+      if (newer || !settings.voices.containsKey(m.id)) {
+        if (settings.voices[m.id] != m.defaultVoice) {
+          picks[m.id] = m.defaultVoice;
+        }
+        if (newer) applied[key] = m.voiceDefaultRevision;
+      }
+    }
+    if (picks.isEmpty && applied.isEmpty) return;
+    // No call is running, so there is no session to renegotiate: only what the voice list and a try-out show changes.
+    settings.voices.addAll(picks);
+    settings.voiceDefaultRevisions.addAll(applied);
+    if (picks.isNotEmpty) {
+      _voice?.clearIdleError();
+      if (_voice?.previewing == true) unawaited(_voice!.stopPreview());
+    }
+    scheduleSave();
+    _changed();
+  }
+
+  Future<void>? _voiceRefresh;
+
+  /// Asks the server for the voices again; opening the settings or the voice list does. Whatever fails leaves the
+  /// voices already known as they are.
+  Future<void> refreshVoiceCatalog() => _voiceRefresh ??= _refreshVoiceCatalog()
+      .whenComplete(() => _voiceRefresh = null);
+
+  Future<void> _refreshVoiceCatalog() async {
+    if (!authenticated || _disposed) return;
+    final run = _catalogEpoch;
+    try {
+      final speech = (await api.models()).where((m) => m.kind == 'speech');
+      if (run != _catalogEpoch || _disposed || speech.isEmpty) return;
+      String look(Iterable<ModelInfo> list) => jsonEncode([
+        for (final m in list)
+          [
+            m.id,
+            m.name,
+            m.defaultVoice,
+            m.voiceCatalogRevision,
+            m.voiceDefaultRevision,
+            for (final v in m.voices) [v.id, v.name, v.description, v.preview],
+          ],
+      ]);
+      final changed =
+          look(models.where((m) => m.kind == 'speech')) != look(speech);
+      models = [...models.where((m) => m.kind != 'speech'), ...speech];
+      _applyVoiceDefaults();
+      if (changed) _changed();
+    } catch (_) {}
   }
 
   void _wentOffline() {
@@ -740,7 +804,7 @@ class JarvisController extends ChangeNotifier {
   String _voiceSettingsSignature() {
     final config = settings.toJson()
       ..remove('messageFontSize')
-      ..remove('atlasVoiceDefaultRevision');
+      ..remove('voiceDefaultRevisions');
     return jsonEncode(config);
   }
 

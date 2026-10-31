@@ -11,6 +11,7 @@ import 'duo_layout.dart';
 import 'settings_widgets.dart';
 
 Future<void> showVoicePicker(BuildContext context, JarvisController c) async {
+  unawaited(c.refreshVoiceCatalog());
   try {
     await showModalBottomSheet<void>(
       context: context,

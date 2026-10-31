@@ -21,6 +21,9 @@ class JarvisException implements Exception {
   String toString() => message;
 }
 
+/// What a voice says when it is tried out without a clip from the server.
+const previewSentence = '你好，我是贾维斯。我们把问题理清楚，一步一步找到答案。';
+
 abstract class JarvisTransport {
   String apiKey = '';
   Future<Map<String, dynamic>> modelSkill() async => {
@@ -55,6 +58,10 @@ abstract class JarvisTransport {
 
   Future<Uint8List> preview(VoiceInfo voice, String model) =>
       throw UnsupportedError('Preview unavailable');
+
+  /// The voice speaking [previewSentence], made by the server's speech engine.
+  Future<Uint8List> synthesize(VoiceInfo voice, String model) =>
+      throw UnsupportedError('Speech unavailable');
   Future<List<String>> generate(
     String requestId,
     String kind,
@@ -239,10 +246,22 @@ class JarvisApi extends JarvisTransport {
       final value = jsonDecode(
         await utf8.decoder.bind(r).join().timeout(const Duration(seconds: 30)),
       ) as Map<String, dynamic>;
+      // The voice revisions may sit on the list itself instead of on the speech engine; the engine's own win.
+      final listRevisions = {
+        for (final key in const [
+          'voice_catalog_revision',
+          'voice_default_revision',
+        ])
+          if (value[key] != null) key: value[key],
+      };
       return (value['data'] as List)
           .cast<Map<String, dynamic>>()
           .where((m) => m['qualified'] != false)
-          .map(ModelInfo.fromJson)
+          .map(
+            (m) => ModelInfo.fromJson(
+              m['kind'] == 'speech' ? {...listRevisions, ...m} : m,
+            ),
+          )
           .toList();
     } finally {
       client.close(force: true);
@@ -461,15 +480,19 @@ class JarvisApi extends JarvisTransport {
   }
 
   @override
-  Future<Uint8List> download(String path) async {
+  Future<Uint8List> download(String path) => _bytesOf(path, _downloadLimit);
+
+  Future<Uint8List> _bytesOf(String path, int limit) async {
     final client = _client();
     try {
       final r = await _fetch(client, path);
       final bytes = BytesBuilder();
       await for (final chunk in r.timeout(const Duration(seconds: 60))) {
         bytes.add(chunk);
-        if (bytes.length > _downloadLimit) {
-          throw const JarvisException('文件超过256MB，请通过网页下载');
+        if (bytes.length > limit) {
+          throw JarvisException(
+            limit == _downloadLimit ? '文件超过256MB，请通过网页下载' : '文件过大',
+          );
         }
       }
       return bytes.takeBytes();
@@ -533,9 +556,24 @@ class JarvisApi extends JarvisTransport {
     }
   }
 
+  static const _previewLimit = 8 * 1024 * 1024;
+
   @override
   Future<Uint8List> preview(VoiceInfo voice, String model) async {
-    if (voice.preview != null) return download(voice.preview!);
+    // The server's own clip first, played as it is (nothing is added here); the same sentence is spoken only when
+    // the server names no clip or it cannot be fetched.
+    final clip = voice.preview;
+    if (clip != null && clip.isNotEmpty) {
+      try {
+        // A try-out clip is a few seconds of speech: anything bigger than the synthesised one is not one.
+        return await _bytesOf(clip, _previewLimit);
+      } catch (_) {}
+    }
+    return synthesize(voice, model);
+  }
+
+  @override
+  Future<Uint8List> synthesize(VoiceInfo voice, String model) async {
     final client = _client();
     try {
       final r = await _request(
@@ -545,7 +583,7 @@ class JarvisApi extends JarvisTransport {
         body: jsonEncode({
           'model': model,
           'voice': voice.id,
-          'input': '你好，我是贾维斯。我们把问题理清楚，一步一步找到答案。',
+          'input': previewSentence,
           'response_format': 'wav',
         }),
         headerTimeout: const Duration(minutes: 2),
@@ -554,7 +592,7 @@ class JarvisApi extends JarvisTransport {
       final b = BytesBuilder();
       await for (final chunk in r.timeout(const Duration(seconds: 45))) {
         b.add(chunk);
-        if (b.length > 8 * 1024 * 1024) throw const JarvisException('试听音频过大');
+        if (b.length > _previewLimit) throw const JarvisException('试听音频过大');
       }
       return b.takeBytes();
     } finally {

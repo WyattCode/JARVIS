@@ -437,6 +437,8 @@ void main() {
         ),
         reason: '$group',
       );
+      // Connecting saved the server's default voice: let the save run.
+      await t.pump(const Duration(seconds: 1));
     });
   });
 
