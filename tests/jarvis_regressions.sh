@@ -8,6 +8,8 @@ import ctypes.util
 from pathlib import Path
 if not ctypes.util.find_library('opencc') or not Path('/usr/share/opencc/t2s.json').is_file():
     raise SystemExit('Missing OpenCC runtime/data. On Ubuntu 24.04, install libopencc1.1 and libopencc-data.')
+if not Path('/usr/bin/pdftotext').is_file():
+    raise SystemExit('Missing pdftotext. On Ubuntu 24.04, install poppler-utils.')
 PY
 jarvis_suite_count=0
 for jarvis_test_file in tests/*_test.py; do

@@ -154,6 +154,7 @@ and production config backups are outside this commit.
 
 The Python voice bridge requires the OpenCC native library and its `t2s.json` dictionary
 for Simplified Chinese output; the bridge refuses conversion when they are missing.
-On Ubuntu 24.04, install `ffmpeg libopencc1.1 libopencc-data` before running the bridge
-or its regressions. FFmpeg must provide the `rubberband` filter for the science-fiction
-voice effects. The regression entry point checks OpenCC availability before starting.
+On Ubuntu 24.04, install `ffmpeg libopencc1.1 libopencc-data poppler-utils openssl` before
+running the bridge or its regressions. PDF attachments use Poppler's `pdftotext`; TLS
+fixtures use `openssl`. FFmpeg must provide the `rubberband` filter for the science-fiction
+voice effects. The regression entry point checks OpenCC and PDF-tool availability first.

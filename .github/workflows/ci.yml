@@ -16,10 +16,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install speech effects and Simplified Chinese dependencies
+      - name: Install voice, PDF and TLS test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libopencc1.1 libopencc-data
+          sudo apt-get install -y ffmpeg libopencc1.1 libopencc-data poppler-utils openssl
       - name: Python regressions in isolated processes
         run: bash tests/jarvis_regressions.sh
       - name: Voice playback assessment and server voice defaults
