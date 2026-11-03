@@ -5,6 +5,9 @@ from pathlib import Path
 import socket
 import unittest
 import wave
+
+if any(importlib.util.find_spec(name) is None for name in ('numpy', 'torch', 'transformers')):
+    raise unittest.SkipTest('optional Qwen-ASR tests require numpy, torch and transformers')
 import torch
 
 spec=importlib.util.spec_from_file_location('qwen_asr_server',Path(__file__).parents[1]/'tools/speech/qwen3_asr/server.py')

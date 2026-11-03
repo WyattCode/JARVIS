@@ -139,7 +139,12 @@ cross-layer checks. There are four targets: `five`, `voice-updates`, `qwen` and 
 Use `--check` before executing. Production rollback was not performed during the final audit.
 
 Submission validation: Python regression files run in separate processes to avoid test-module
-name collisions; Zig 0.17.0 unit tests need `ffmpeg` on `PATH`. Browser regressions use mocked
+name collisions. Run `bash tests/jarvis_regressions.sh` from a checkout; CI runs the same
+entry point plus the playback-assessment and server-default policy tests. Zig 0.17.0 unit
+tests need `ffmpeg` on `PATH`. The optional Qwen-ASR suite reports a skip when its
+NumPy/PyTorch/Transformers environment is absent; it does not load an ASR model for these
+checks. Private calibration-audio checks also report skips on a fresh checkout.
+Browser regressions use mocked
 model/WebSocket traffic with `PLAYWRIGHT_MODULE` set to an installed Playwright package.
 `tests/voice_readiness.cjs` covers actual readiness, stale voice events, warmup failures and
 legacy rollback compatibility; `tests/release_control_test.py` covers locking and bad journals.

@@ -5,6 +5,27 @@ on:
 permissions:
   contents: read
 jobs:
+  jarvis-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install speech effect dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Python regressions in isolated processes
+        run: bash tests/jarvis_regressions.sh
+      - name: Voice playback assessment and server voice defaults
+        run: |
+          node --test tests/public_voice_regression_test.cjs
+          node tests/server_voice_policy.cjs
   test:
     runs-on: ubuntu-24.04
     steps:
