@@ -151,3 +151,9 @@ legacy rollback compatibility; `tests/release_control_test.py` covers locking an
 Speech effects use `JARVIS_FFMPEG` or `ffmpeg` on `PATH`; the build machine's private ffmpeg
 path is not required. Operator credentials, signing keys, model weights, APKs, media samples
 and production config backups are outside this commit.
+
+The Python voice bridge requires the OpenCC native library and its `t2s.json` dictionary
+for Simplified Chinese output; the bridge refuses conversion when they are missing.
+On Ubuntu 24.04, install `ffmpeg libopencc1.1 libopencc-data` before running the bridge
+or its regressions. FFmpeg must provide the `rubberband` filter for the science-fiction
+voice effects. The regression entry point checks OpenCC availability before starting.
