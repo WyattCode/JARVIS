@@ -1,4 +1,6 @@
 import base64
+import asyncio
+import math
 import hashlib
 import http.client
 import importlib.util
@@ -18,7 +20,7 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('public_access',ROOT/'deploy/jarvis/public_access.py');access=importlib.util.module_from_spec(spec);spec.loader.exec_module(access)
-HOST='jarvis.example.com';ORIGIN='https://'+HOST
+HOST='jarvis.odn.cc';ORIGIN='https://'+HOST
 
 class Backend(BaseHTTPRequestHandler):
  protocol_version='HTTP/1.1'
@@ -49,7 +51,7 @@ class PublicTests(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
   cls.tmp=tempfile.TemporaryDirectory();cls.dir=Path(cls.tmp.name);cls.auth=cls.dir/'auth.json';cls.credentials=cls.dir/'credentials.txt'
-  access.create(cls.auth,'user',cls.credentials);cls.password=cls.credentials.read_text().splitlines()[1].split('：',1)[1]
+  access.create(cls.auth,'wyatt',cls.credentials);cls.password=cls.credentials.read_text().splitlines()[1].split('：',1)[1]
   user_salt=os.urandom(16);cfg=json.loads(cls.auth.read_text());cfg['users']=[{'username':'test','salt':user_salt.hex(),'iterations':200000,'password_hash':hashlib.pbkdf2_hmac('sha256',b'test123',user_salt,200000).hex()}];cls.auth.write_text(json.dumps(cfg))
   subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(cls.dir/'server.key'),'-out',str(cls.dir/'server.crt'),'-days','1','-subj','/CN=localhost'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
   cls.backends=[]
@@ -77,15 +79,15 @@ class PublicTests(unittest.TestCase):
   try:
    c.request(method,path,body=body,headers=h);r=c.getresponse();return r.status,dict(r.getheaders()),r.read()
   finally:c.close()
- def login(self,username='user',password=None):
+ def login(self,username='wyatt',password=None):
   return self.request('/login','POST',urllib.parse.urlencode({'username':username,'password':self.password if password is None else password}),headers={'Origin':ORIGIN,'Content-Type':'application/x-www-form-urlencoded'})
  def setUp(self):
   status,h,_=self.login();self.assertEqual(status,303);self.cookie=h['Set-Cookie'].split(';',1)[0]
  def test_additional_account_preserves_primary_and_separates_browser_storage(self):
   status,h,_=self.login('test','test123');self.assertEqual(status,303);cookie=h['Set-Cookie'].split(';',1)[0]
   status,_,body=self.request('/voice',cookie=cookie);self.assertEqual(status,200);self.assertIn(b'"username": "test"',body);self.assertIn(b'jarvis.user.',body)
-  status,_,primary=self.request('/voice',cookie=self.cookie);self.assertEqual(status,200);self.assertIn(b'"username": "user"',primary);self.assertIn(b'"storagePrefix": "jarvis."',primary)
-  self.assertEqual(self.login('test',self.password)[0],401);self.assertEqual(self.login('user','test123')[0],401)
+  status,_,primary=self.request('/voice',cookie=self.cookie);self.assertEqual(status,200);self.assertIn(b'"username": "wyatt"',primary);self.assertIn(b'"storagePrefix": "jarvis."',primary)
+  self.assertEqual(self.login('test',self.password)[0],401);self.assertEqual(self.login('wyatt','test123')[0],401)
   self.assertEqual(self.request('/logout','POST',b'',cookie=cookie,headers={'Origin':ORIGIN})[0],303)
   self.assertEqual(self.request('/v1/models',cookie=cookie)[0],401);self.assertEqual(self.request('/v1/models',cookie=self.cookie)[0],200)
  def test_anonymous_cannot_reach_any_model_voice_media_or_management_route(self):
@@ -129,8 +131,8 @@ class PublicTests(unittest.TestCase):
   self.assertEqual(self.login(password='wrong')[0],401);self.assertEqual(self.login(username='其他用户')[0],401)
  def test_wrong_host_or_cross_site_origins_are_rejected(self):
   self.assertEqual(self.request('/v1/models',cookie=self.cookie,headers={'Host':'evil.example'})[0],403)
-  self.assertEqual(self.request('/v1/realtime',cookie=self.cookie,headers={'Origin':'https://evil.example.com','Upgrade':'websocket'})[0],403)
-  self.assertEqual(self.request('/login','POST','username=user&password=x',headers={'Content-Type':'application/x-www-form-urlencoded'})[0],403)
+  self.assertEqual(self.request('/v1/realtime',cookie=self.cookie,headers={'Origin':'https://evil.odn.cc','Upgrade':'websocket'})[0],403)
+  self.assertEqual(self.request('/login','POST','username=wyatt&password=x',headers={'Content-Type':'application/x-www-form-urlencoded'})[0],403)
  def test_logout_revokes_previously_issued_cookie(self):
   self.assertEqual(self.request('/logout','POST',b'',self.cookie,{'Origin':ORIGIN})[0],303)
   self.assertEqual(self.request('/v1/models',cookie=self.cookie)[0],401)
@@ -153,6 +155,29 @@ class PublicTests(unittest.TestCase):
     while b'\r\n\r\n'not in data:data+=sock.recv(1)
     self.assertIn(b'101',data.split(b'\r\n')[0]);self.assertEqual(sock.recv(4),b'\x81\x02ok')
   self.assertTrue(backend.disconnected.wait(2))
+ def test_nonexpiring_session_remains_valid_after_many_years(self):
+  now=[100.0];gate=access.PublicAccess(self.auth,HOST,clock=lambda:now[0])
+  class Writer:
+   def __init__(self):self.data=b''
+   def write(self,data):self.data+=data
+   async def drain(self):pass
+  async def exercise():
+   body=urllib.parse.urlencode({'username':'wyatt','password':self.password}).encode()
+   reader=asyncio.StreamReader();reader.feed_data(body);reader.feed_eof();writer=Writer()
+   headers={b'host':[HOST],b'origin':[ORIGIN],b'content-type':['application/x-www-form-urlencoded'],b'content-length':[str(len(body))]}
+   await gate.handle(reader,writer,'POST','/login',headers,('127.0.0.1',12345))
+   self.assertTrue(writer.data.startswith(b'HTTP/1.1 303'))
+   line=next(x for x in writer.data.decode().split('\r\n') if x.startswith('Set-Cookie: '))
+   cookie=line[len('Set-Cookie: '):].split(';',1)[0];session_headers={b'host':[HOST],b'cookie':[cookie],b'origin':[ORIGIN]}
+   key=gate.session(session_headers);self.assertIsNotNone(key);self.assertTrue(math.isinf(gate.sessions[key]))
+   now[0]+=50*365*86400
+   self.assertEqual(gate.session(session_headers),key)
+   writer=Writer();await gate.handle(asyncio.StreamReader(),writer,'POST','/logout',session_headers,('127.0.0.1',12345))
+   self.assertIsNone(gate.session(session_headers));self.assertIn(b'Max-Age=0',writer.data)
+  asyncio.run(exercise())
+ def test_login_sets_long_lived_secure_cookie(self):
+  status,h,_=self.login();self.assertEqual(status,303)
+  self.assertIn('Max-Age='+str(access.COOKIE_MAX_AGE),h['Set-Cookie'])
  def test_expired_sessions_and_unsafe_auth_files_are_rejected(self):
   gate=access.PublicAccess(self.auth,HOST,clock=lambda:100);token='test-token';key=hashlib.sha256(token.encode()).hexdigest();gate.sessions[key]=99
   self.assertIsNone(gate.session({b'cookie':[access.COOKIE+'='+token]}))

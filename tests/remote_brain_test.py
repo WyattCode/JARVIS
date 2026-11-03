@@ -1,3 +1,5 @@
+import base64
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
 import http.client
 import asyncio
 import importlib.util
@@ -9,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +45,69 @@ class Upstream(BaseHTTPRequestHandler):
         except (BrokenPipeError,ConnectionResetError): self.server.cancelled.set()
 
 class BridgeTests(unittest.TestCase):
+    def test_remote_image_response_is_mirrored_before_returning_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            b=brain.Bridge({**CONFIG,'base_url':'http://127.0.0.1:1234/v1','image_worker_port':8196,'artifact_root':tmp})
+            value={'data':[{'url':'http://127.0.0.1:8196/v1/files/img_0123456789abcdef/0.png'}]}
+            import io
+            import base64
+            png=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC')
+            with patch.object(brain.urllib.request,'build_opener') as make:
+                make.return_value.open.return_value=io.BytesIO(png)
+                make.return_value.open.return_value.headers={'Content-Length':str(len(png))}
+                result=asyncio.run(b.cache_image_response(value))
+            self.assertEqual(result['data'][0]['url'],'/v1/files/img_0123456789abcdef/0.png')
+            self.assertEqual((Path(tmp)/'img_0123456789abcdef/0.png').read_bytes(),png)
+    def test_remote_image_cache_refuses_invalid_png_and_path(self):
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            b=brain.Bridge({**CONFIG,'base_url':'http://127.0.0.1:1234/v1','image_worker_port':8196,'artifact_root':tmp})
+            with patch.object(brain.urllib.request,'build_opener') as make:
+                make.return_value.open.return_value=io.BytesIO(b'not a PNG')
+                make.return_value.open.return_value.headers={}
+                with self.assertRaises(OSError):asyncio.run(b.cache_image_response({'data':[{'url':'/v1/files/img_0123456789abcdef/0.png'}]}))
+                with self.assertRaises(ValueError):asyncio.run(b.cache_image_response({'data':[{'url':'/v1/files/../../secret'}]}))
+            self.assertFalse(any(Path(tmp).iterdir()))
+    def test_native_image_file_survives_lost_in_memory_job(self):
+        self.assertEqual(self.request('/v1/files/img_0123456789abcdef/0.png'),(200,PNG))
+    def test_remote_image_routes_preserve_speech_and_old_artifacts(self):
+        b=brain.Bridge({**CONFIG,'base_url':'http://127.0.0.1:1234/v1','image_worker_port':8196,'image_worker_machine':'remote','speech_backend_port':8194,'video_worker_port':8196,'video_backend_port':8194})
+        self.assertEqual(b.video_ports('/v1/images/generations','POST'),[8196])
+        self.assertEqual(b.video_ports('/v1/tools/qwen-image-2.1-turbo/load','POST'),[8196])
+        self.assertEqual(b.video_ports('/v1/files/img_old/0.png','GET'),[8196,8190])
+        self.assertEqual(b.video_ports('/v1/files/image_old/image.png','GET'),[8196,8190])
+        self.assertEqual(b.video_ports('/v1/audio/speech','POST'),[8194])
+        for name,args in [('generate_image',{}),('load_model',{'model':'qwen-image-2.1-turbo'}),('unload_model',{'model':'image'}),('reserve_for',{'model':'image'})]:
+            self.assertEqual(b.mcp_ports({'method':'tools/call','params':{'name':name,'arguments':args}}),[8196])
+        self.assertEqual(b.mcp_ports({'method':'tools/call','params':{'name':'get_job','arguments':{'id':'img_old'}}}),[8196,8190])
+        self.assertEqual(b.mcp_ports({'method':'tools/call','params':{'name':'load_model','arguments':{'model':'fishaudio/drama-3'}}}),[8190])
+    def test_remote_image_metadata_tracks_worker_and_failure(self):
+        b=brain.Bridge({**CONFIG,'base_url':'http://127.0.0.1:1234/v1','image_worker_port':8196,'image_worker_machine':'remote'})
+        async def metadata(remote,path,port=None,**kwargs):
+            if remote:return {'data':[{'id':'new-brain'}]}
+            if port==8196:return {'data':[{'id':'qwen-image-2.1-turbo','kind':'image','state':'busy','running':True}]}
+            return {'data':[{'id':'qwen-image-2.1-turbo','kind':'image','state':'ready'},{'id':'speech','kind':'speech'}]}
+        b.fetch_json=metadata
+        for path in ['/models','/tools']:
+            image=next(m for m in asyncio.run(b.metadata(path))['data'] if m['kind']=='image')
+            self.assertEqual(image['machine'],'remote');self.assertEqual(image['state'],'busy')
+        async def broken(remote,path,port=None,**kwargs):
+            if port==8196:raise OSError('offline')
+            return await metadata(remote,path,port,**kwargs)
+        b.fetch_json=broken
+        image=next(m for m in asyncio.run(b.metadata('/models'))['data'] if m['kind']=='image')
+        self.assertIsNone(image['running']);self.assertEqual(image['state'],'unknown');self.assertIn('暂不可查询',image['last_error'])
+    def test_image_and_video_limits_stay_separate(self):
+        image={'max_side':2752,'max_pixels':4300800}
+        video={'max_seconds':15}
+        b=brain.Bridge({**CONFIG,'base_url':'http://127.0.0.1:1234/v1','image_limits':{'image':image},'video_limits':{'video':video,'image':video}})
+        async def metadata(remote,path,port=None,**kwargs):
+            if remote:return {'data':[{'id':'new-brain'}]}
+            return {'data':[{'id':'image','kind':'image'},{'id':'video','kind':'video'}]}
+        b.fetch_json=metadata
+        models=asyncio.run(b.metadata('/models'))['data']
+        self.assertEqual(next(m for m in models if m['id']=='image')['limits'],image)
+        self.assertEqual(next(m for m in models if m['id']=='video')['limits'],video)
     def test_separate_transcription_service_routes_and_metadata(self):
         b=brain.Bridge({**CONFIG,'base_url':'http://127.0.0.1:1234/v1','transcription_backend_port':18795})
         async def metadata(remote,path,port=None,**kwargs):
@@ -71,8 +137,9 @@ class BridgeTests(unittest.TestCase):
         cls.servers=[]
         for remote in (False,True):
             s=ThreadingHTTPServer(('127.0.0.1',0),Upstream);s.remote=remote;s.calls=[];s.cancelled=threading.Event();threading.Thread(target=s.serve_forever,daemon=True).start();cls.servers.append(s)
-        cls.tmp=tempfile.TemporaryDirectory();folder=Path(cls.tmp.name);artifacts=folder/'artifacts';(artifacts/'image_saved').mkdir(parents=True);(artifacts/'image_saved/image-0.png').write_bytes(b'archived-image')
+        cls.tmp=tempfile.TemporaryDirectory();folder=Path(cls.tmp.name);artifacts=folder/'artifacts';(artifacts/'image_saved').mkdir(parents=True);(artifacts/'image_saved/image-0.png').write_bytes(PNG)
         (artifacts/'video_0123456789abcdef').mkdir();(artifacts/'video_0123456789abcdef/video.mp4').write_bytes(b'new-video')
+        (artifacts/'img_0123456789abcdef').mkdir();(artifacts/'img_0123456789abcdef/0.png').write_bytes(PNG)
         history=folder/'history.json';history.write_text(json.dumps({'jobs':{'image_saved':{'id':'image_saved','status':'completed','urls':['/v1/files/image_saved/image-0.png']}},'videos':{'video_failed':{'id':'video_failed','status':'failed','error':{'message':'old failure'}}}}))
         c={**CONFIG,'base_url':f'http://127.0.0.1:{cls.servers[1].server_port}/v1','artifact_root':str(artifacts),'job_history':str(history)};p=folder/'config.json';p.write_text(json.dumps(c))
         with socket.socket()as probe:probe.bind(('127.0.0.1',0));cls.port=probe.getsockname()[1]
@@ -143,7 +210,7 @@ class BridgeTests(unittest.TestCase):
     def test_invalid_pdf_is_rejected_without_chat_request(self):
         count=len(self.servers[1].calls);self.assertEqual(self.pdf_request(b'not a PDF')[0],400);self.assertEqual(len(self.servers[1].calls),count)
     def test_completed_media_remains_readable_from_saved_index(self):
-        self.assertEqual(self.request('/v1/files/image_saved/image-0.png'),(200,b'archived-image'))
+        self.assertEqual(self.request('/v1/files/image_saved/image-0.png'),(200,PNG))
         status,body=self.request('/v1/jobs/image_saved');self.assertEqual(status,200);self.assertEqual(json.loads(body)['status'],'completed')
     def test_failed_video_history_remains_available(self):
         status,body=self.request('/v1/videos/video_failed');self.assertEqual(status,200);self.assertEqual(json.loads(body)['error']['message'],'old failure')

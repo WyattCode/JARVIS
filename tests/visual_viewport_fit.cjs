@@ -1,7 +1,7 @@
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const fs=require('fs'),path=require('path'),assert=require('assert');
 (async()=>{const b=await chromium.launch({headless:true});try{
- const c=await b.newContext({viewport:{width:980,height:539},hasTouch:true,isMobile:true,reducedMotion:'reduce'}),p=await c.newPage(),errors=[];p.on('pageerror',e=>errors.push(e.message));
+ const c=await b.newContext({viewport:{width:980,height:539},hasTouch:true,isMobile:true,userAgent:'Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 Chrome/144 Mobile Safari/537.36',reducedMotion:'reduce'}),p=await c.newPage(),errors=[];p.on('pageerror',e=>errors.push(e.message));
  await p.addInitScript(()=>{window.testViewport={width:925.1166,height:509.1333,scale:.93697};for(const k of ['width','height','scale'])Object.defineProperty(visualViewport,k,{configurable:true,get:()=>testViewport[k]})});
  await p.route('**/*',r=>{const n=new URL(r.request().url()).pathname;return r.fulfill(n==='/voice'?{contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../src/voice/voice.html'),'utf8')}:{json:n==='/v1/models'?{data:[{id:'chat',kind:'chat'}]}:n==='/v1/tools'?{data:[{id:'chat',kind:'chat',state:'ready'}]}:{enabled:false}})});
  await p.goto('https://jarvis.test/voice');await p.waitForFunction(()=>jarvis.ready);

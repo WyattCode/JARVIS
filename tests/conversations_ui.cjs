@@ -27,11 +27,11 @@ const fs=require('fs'),path=require('path'),assert=require('assert');
     if(String(url).endsWith('/v1/images/generations'))return new Promise(resolve=>__images.push({body:JSON.parse(opts.body),finish(){resolve(new Response(JSON.stringify({data:[{url:'/result.png'}]}),{headers:{'Content-Type':'application/json'}}));}}));
     return realFetch(url,opts);
    };
-   class Socket{static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;__sockets.push(this);}open(){this.readyState=1;this.onopen?.({});}send(s){const e=JSON.parse(s);if(e.type==='session.update')this.settings=e.session;__sent.push(e);}close(code=1000,reason=''){this.readyState=3;this.onclose?.({code,reason});}event(e){if(e.type==='session.updated'){const s=[...__sent].reverse().find(x=>x.type==='session.update')?.session||{};e.session={speech_model:this.settings?.speech_model??s.speech_model,voice:this.settings?.voice??s.voice,...e.session}}this.onmessage?.({data:JSON.stringify(e)});}}
+   class Socket{static OPEN=1;static CONNECTING=0;constructor(){this.readyState=0;__sockets.push(this);}open(){this.readyState=1;this.onopen?.({});}send(s){__sent.push(JSON.parse(s));}close(code=1000,reason=''){this.readyState=3;this.onclose?.({code,reason});}event(e){this.onmessage?.({data:JSON.stringify(e)});}}
    window.WebSocket=Socket;
   });
   await page.goto('http://127.0.0.1:8190/voice');await page.waitForFunction(()=>jarvis.ready);
-  const a=await page.evaluate(()=>{S.think=false;jarvis.say('话题A');return cur.id});await page.waitForFunction(()=>__requests.length===1);
+  const a=await page.evaluate(()=>{jarvis.say('话题A');return cur.id});await page.waitForFunction(()=>__requests.length===1);
   await page.evaluate(()=>__requests[0].chunk({content:'A第一段'}));
   await page.locator('#newChat').click();const b=await page.evaluate(()=>cur.id);assert.notEqual(a,b);
   await page.evaluate(()=>{S.think=true;jarvis.say('话题B')});await page.waitForFunction(()=>__requests.length===2);
@@ -47,13 +47,13 @@ const fs=require('fs'),path=require('path'),assert=require('assert');
   await page.locator('#send').click();await page.waitForFunction(()=>chats.size===1);
   assert.equal(await page.evaluate(()=>__requests[0].signal.aborted),false);
   assert.equal(await page.evaluate(()=>__requests[1].signal.aborted),true);
-  // A media task is independent; its later user-requested continuation retains owner history.
+  // A calls an image tool in the background; the continuation must keep A's history and settings.
   await page.evaluate(()=>{__requests[0].chunk({tool_calls:[{index:0,id:'image-a',function:{name:'generate_image',arguments:'{"prompt":"A image"}'}}]});__requests[0].end();});
   await page.waitForFunction(()=>__images.length===1);
   assert.equal(await page.evaluate(()=>cur.msgs.some(m=>m.role==='tool')),false);
   await page.locator('#newChat').click();const c=await page.evaluate(()=>{jarvis.say('话题C');return cur.id});
   await page.waitForFunction(()=>__requests.length===3);
-  await page.evaluate(()=>__images[0].finish());await page.waitForFunction(()=>mediaTasks.size===0);assert.equal(await page.evaluate(()=>__requests.length),3);await page.evaluate(id=>{openConv(id);S.think=false;jarvis.say('继续话题A')},a);await page.waitForFunction(()=>__requests.length===4);
+  await page.evaluate(()=>__images[0].finish());await page.waitForFunction(()=>__requests.length===4);
   const continuation=await page.evaluate(()=>__requests[3].body);
   assert.equal(continuation.chat_template_kwargs.enable_thinking,false);
   assert(continuation.messages.some(m=>m.role==='user'&&m.content==='话题A'));
@@ -63,7 +63,6 @@ const fs=require('fs'),path=require('path'),assert=require('assert');
   await page.waitForFunction(()=>chats.size===0);
   const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('jarvis.convs')));
   assert(saved.find(x=>x.id===a).msgs.some(m=>m.media?.length));assert(!saved.find(x=>x.id===c).msgs.some(m=>m.role==='tool'));
-  await page.evaluate(id=>openConv(id),c);
   // Voice response continues after creating a new topic; its events never enter that topic.
   await page.locator('#mic').click();await page.waitForFunction(()=>V.mic&&__sockets.length===1);
   await page.evaluate(()=>{__sockets[0].open();__sockets[0].event({type:'session.created',session:{instructions:''}});__sockets[0].event({type:'session.updated',session:{reasoning:true}});__sockets[0].event({type:'response.created',response:{id:'voice-active'}});});

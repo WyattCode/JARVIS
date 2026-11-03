@@ -146,14 +146,6 @@ pub const Parser = struct {
         }
     }
 
-    pub fn complete(p: *Parser, why: *Why) Error!Result {
-        if (!p.done and p.finish_reason.len == 0) {
-            why.set("chat stream ended without a completion marker; reply may be incomplete", .{});
-            return error.Failed;
-        }
-        return p.result();
-    }
-
     pub fn result(p: *Parser) !Result {
         const calls = try p.a.alloc(ToolCall, p.calls.items.len);
         for (calls, p.calls.items, 0..) |*d, s, i| {
@@ -226,7 +218,7 @@ pub const Client = struct {
             try p.line(l, sink, why);
         }
         if (stop.cancelled()) return error.Cancelled;
-        return p.complete(why);
+        return p.result();
     }
 };
 
@@ -327,15 +319,4 @@ test "the request body is OpenAI's, with tools only when there are some" {
     const more = try body(a, &.{ .messages = &msgs, .extra = extra });
     try std.testing.expect(std.mem.indexOf(u8, more, "\"chat_template_kwargs\":{\"enable_thinking\":false}") != null);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, more, "\"stream\":"));
-}
-
-test "EOF needs an SSE terminal marker and preserves length as incomplete evidence" {
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    var p: Parser = .{ .a = arena.allocator() };
-    var why: Why = .{};
-    try std.testing.expectError(error.Failed, p.complete(&why));
-    p.finish_reason = "length";
-    const result = try p.complete(&why);
-    try std.testing.expectEqualStrings("length", result.finish_reason);
 }

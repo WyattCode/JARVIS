@@ -134,7 +134,7 @@ pub const Request = union(Kind) {
 
 pub const Limits = struct {
     min_side: u32 = 256,
-    max_side: u32 = 2048,
+    max_side: u32 = 2752,
     max_n: u32 = 4,
     max_seconds: u32 = 20,
     max_fps: u32 = 30,
@@ -204,7 +204,7 @@ fn language(s: []const u8) bool {
 fn common(prompt: []const u8, w: u32, h: u32, steps: u32, l: Limits, why: *[]const u8) Invalid!void {
     if (prompt.len == 0) return fail(why, "prompt is required");
     if (prompt.len > l.max_prompt) return fail(why, "prompt is too long");
-    if (w < l.min_side or h < l.min_side or w > l.max_side or h > l.max_side) return fail(why, "size sides must be 256 to 2048");
+    if (w < l.min_side or h < l.min_side or w > l.max_side or h > l.max_side) return fail(why, "size sides must be 256 to 2752");
     if (w % 16 != 0 or h % 16 != 0) return fail(why, "size sides must be multiples of 16");
     if (steps > l.max_steps) return fail(why, "steps must be at most 200");
 }
@@ -294,4 +294,12 @@ test "chat requests: capability, limits and wire shape" {
     defer back.deinit();
     try std.testing.expectEqualStrings(ask.chat.body, back.value.chat.body);
     try std.testing.expect(back.value.chat.stream);
+}
+
+test "2K image aspect ratio boundary" {
+    var why: []const u8 = "";
+    for ([_][2]u32{ .{ 2048, 2048 }, .{ 2752, 1536 }, .{ 1536, 2752 } }) |size| {
+        try validate(.{ .image = .{ .prompt = "test", .width = size[0], .height = size[1] } }, .{}, &why);
+    }
+    try std.testing.expectError(error.Invalid, validate(.{ .image = .{ .prompt = "test", .width = 2768, .height = 1536 } }, .{}, &why));
 }

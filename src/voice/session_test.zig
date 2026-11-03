@@ -21,6 +21,8 @@ const Fake = struct {
     speak_ms: u32 = 1,
     requests: std.ArrayList([]const u8) = .empty, // chat request bodies
     spoke: std.ArrayList([]const u8) = .empty,
+    spoken_voices: std.ArrayList([]const u8) = .empty,
+    begun_voices: std.ArrayList([]const u8) = .empty,
     specs: std.ArrayList(backend.JobSpec) = .empty,
     chat_cancelled: std.atomic.Value(bool) = .init(false),
     speech_cancelled: std.atomic.Value(bool) = .init(false),
@@ -58,17 +60,19 @@ const Fake = struct {
         return a.dupe(u8, f.heard);
     }
 
-    fn speak(p: *anyopaque, a: std.mem.Allocator, text: []const u8, _: backend.Say, sink: backend.PcmSink, stop: *Stop, why: *backend.Why) backend.Error!void {
+    fn speak(p: *anyopaque, a: std.mem.Allocator, text: []const u8, spoken: backend.Say, sink: backend.PcmSink, stop: *Stop, why: *backend.Why) backend.Error!void {
         const f = self(p);
         if (std.mem.indexOf(u8, text, "unspeakable") != null) {
             why.set("the fake voice failed", .{});
             return error.Failed;
         }
+        f.keep(&f.begun_voices, spoken.voice);
         if (!f.nap(f.speak_ms, stop)) {
             f.speech_cancelled.store(true, .release);
             return error.Cancelled;
         }
         f.keep(&f.spoke, text);
+        f.keep(&f.spoken_voices, spoken.voice);
         const samples = try a.alloc(i16, 2205 * @max(text.len / 10, 1)); // 100 ms at 22.05 kHz per 10 characters
         @memset(samples, 1000);
         const half = samples.len / 2; // streamed, in two pieces
@@ -86,6 +90,11 @@ const Fake = struct {
             // after the models were listed, the picture; after the picture, the confirmation
             if (std.mem.eql(u8, last.tool_call_id orelse "", "call_lm")) return f.call(a, sink, "call_7", "generate_image", "{\"prompt\": \"a red fox\"}");
             return f.say(a, &.{"Your picture is ready."}, sink, stop);
+        }
+        if (std.mem.indexOf(u8, said, "slowly draw") != null) {
+            if (sink.tool) |t| t(sink.ctx, "generate_image");
+            if (!f.nap(3000, stop)) return error.Cancelled;
+            return f.call(a, sink, "call_d", "generate_image", "{\"prompt\": \"a cat\"}");
         }
         if (std.mem.indexOf(u8, said, "check") != null) return f.call(a, sink, "call_lm", "list_models", "{}");
         if (std.mem.indexOf(u8, said, "fail") != null) {
@@ -219,6 +228,12 @@ const Rig = struct {
         v.warm_speech = false; // the tests count what is spoken
         rig.* = .{ .fake = .{ .io = io, .arena = .init(testing.allocator) }, .rec = .{ .io = io, .arena = .init(testing.allocator) } };
         rig.s = try Session.create(testing.allocator, io, rig.fake.b(), .{ .ctx = &rig.rec, .send = Rec.send }, v, "");
+    }
+
+    fn startWarm(rig: *Rig, delay: u32) !void {
+        const io = testing.io;
+        rig.* = .{ .fake = .{ .io = io, .arena = .init(testing.allocator), .speak_ms = delay }, .rec = .{ .io = io, .arena = .init(testing.allocator) } };
+        rig.s = try Session.create(testing.allocator, io, rig.fake.b(), .{ .ctx = &rig.rec, .send = Rec.send }, .{ .prime_chat = false, .warm_speech = true }, "");
     }
 
     fn stop(rig: *Rig) void {
@@ -645,4 +660,75 @@ test "a receipt after a newer user turn stays attached to its original tool call
     try testing.expectEqualStrings("tool", msgs[msgs.len - 2].role);
     try testing.expectEqualStrings("late_video", msgs[msgs.len - 2].tool_call_id.?);
     try testing.expect(std.mem.indexOf(u8, msgs[msgs.len - 2].content.?, "completed") != null);
+}
+
+test "a barge-in while a picture call is written: no call, and the session's \"Making that now.\" leaves the history with it" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var rig: Rig = undefined;
+    try rig.start(.{ .prime_chat = false, .partial_interval_ms = 0 });
+    defer rig.stop();
+    rig.heard("slowly draw me a cat");
+    try rig.audio(600, true);
+    try rig.audio(700, false);
+    _ = try rig.rec.wait("localrouter.response.speech_done", 0); // "Making that now." was said while the arguments are written
+    try testing.expectEqualStrings("Making that now.", rig.fake.spoke.items[0]);
+    rig.heard("never mind, hello there");
+    try rig.audio(600, true);
+    const cut = try rig.rec.get(a, try rig.rec.wait("response.done", 0));
+    try testing.expectEqualStrings("cancelled", cut.object.get("response").?.object.get("status").?.string);
+    try testing.expectEqual(@as(usize, 0), rig.rec.count("response.function_call_arguments.done", 0));
+    const said = cut.object.get("response").?.object.get("output").?.array.items[0].object.get("content").?.array.items[0].object.get("transcript").?.string;
+    try testing.expectEqualStrings("", said);
+    try rig.audio(700, false);
+    _ = try rig.rec.wait("response.done", 1);
+    const next = rig.fake.requests.items[rig.fake.requests.items.len - 1];
+    try testing.expect(contains(next, "never mind, hello there"));
+    try testing.expect(!contains(next, "Making that now."));
+}
+
+test "selected voice warms once and ready follows its completion" {
+    var rig: Rig = undefined;
+    try rig.startWarm(25);
+    defer rig.stop();
+    rig.s.handle("{\"type\":\"session.update\",\"session\":{\"voice\":\"Ezra\"}}");
+    _ = try rig.rec.wait("localrouter.session.ready", 0);
+    rig.fake.mutex.lockUncancelable(rig.fake.io);
+    try testing.expectEqual(@as(usize, 1), rig.fake.spoken_voices.items.len);
+    try testing.expectEqualStrings("Ezra", rig.fake.spoken_voices.items[0]);
+    rig.fake.mutex.unlock(rig.fake.io);
+    rig.s.handle("{\"type\":\"session.update\",\"session\":{\"voice\":\"Ezra\"}}");
+    _ = try rig.rec.wait("localrouter.session.ready", 1);
+    rig.fake.mutex.lockUncancelable(rig.fake.io);
+    defer rig.fake.mutex.unlock(rig.fake.io);
+    try testing.expectEqual(@as(usize, 1), rig.fake.spoken_voices.items.len);
+}
+test "changing voice stops stale warm-up and readies the selected voice" {
+    var rig: Rig = undefined;
+    try rig.startWarm(200);
+    defer rig.stop();
+    rig.s.handle("{\"type\":\"session.update\",\"session\":{\"voice\":\"Ezra\"}}");
+    var began = false;
+    for (0..1000) |_| {
+        rig.fake.mutex.lockUncancelable(rig.fake.io);
+        began = rig.fake.begun_voices.items.len > 0;
+        rig.fake.mutex.unlock(rig.fake.io);
+        if (began) break;
+        try Io.sleep(testing.io, .fromMilliseconds(1), .awake);
+    }
+    try testing.expect(began);
+    rig.s.handle("{\"type\":\"session.update\",\"session\":{\"voice\":\"Nora\"}}");
+    _ = try rig.rec.wait("localrouter.session.ready", 0);
+    rig.fake.mutex.lockUncancelable(rig.fake.io);
+    defer rig.fake.mutex.unlock(rig.fake.io);
+    try testing.expectEqual(@as(usize, 1), rig.fake.spoken_voices.items.len);
+    try testing.expectEqualStrings("Nora", rig.fake.spoken_voices.items[0]);
+}
+test "hangup cancels pending voice preparation promptly" {
+    var rig: Rig = undefined;
+    try rig.startWarm(3000);
+    const began = Io.Clock.awake.now(testing.io);
+    rig.stop();
+    try testing.expect(began.durationTo(Io.Clock.awake.now(testing.io)).toMilliseconds() < 500);
 }

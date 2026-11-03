@@ -59,7 +59,7 @@ class OffloadTests(unittest.TestCase):
    with mock.patch.object(self.b,'local_rpc',rpc):
     out=asyncio.run(self.b.model_list({}))
    models=json.loads(out['result']['content'][0]['text'])['models']
-   self.assertEqual(models[-1]['id'],'minimax-h3');self.assertEqual(models[-1]['state'],'failed')
+   self.assertEqual(models[-1]['id'],'minimax-h3');self.assertEqual(models[-1]['state'],'unknown')
    self.assertEqual(rpc.call_args.kwargs,{'timeout':1.5})
  def test_metadata_worker_offline_without_head_video_registration(self):
   async def fetch(remote,path,port=None,timeout=8):
@@ -68,7 +68,7 @@ class OffloadTests(unittest.TestCase):
   with mock.patch.object(self.b,'fetch_json',side_effect=fetch):
    for path in ['/models','/tools']:
     data=asyncio.run(self.b.metadata(path))['data']
-    self.assertEqual(data[-1]['id'],'minimax-h3');self.assertEqual(data[-1]['state'],'failed')
+    self.assertEqual(data[-1]['id'],'minimax-h3');self.assertEqual(data[-1]['state'],'unknown')
  def test_chunked_small_chunks_work_but_oversized_trailers_are_rejected(self):
   async def run():
    r=asyncio.StreamReader();r.feed_data(b'1\r\na\r\n'*10000+b'0\r\n\r\n');r.feed_eof()
@@ -79,6 +79,8 @@ class OffloadTests(unittest.TestCase):
 
 class OffloadHttpTests(unittest.IsolatedAsyncioTestCase):
  async def asyncSetUp(self):
+  guard=mock.patch.object(brain,'prepare_video_prompt',side_effect=lambda prompt:prompt)
+  guard.start();self.addCleanup(guard.stop)
   self.calls=[];self.servers=[]
   async def backend(reader,writer,role):
    try:
@@ -100,14 +102,16 @@ class OffloadHttpTests(unittest.IsolatedAsyncioTestCase):
  async def request(self,data):
   reader,writer=await asyncio.open_connection('127.0.0.1',self.port);writer.write(data);await writer.drain();out=await asyncio.wait_for(reader.read(),3);writer.close();await writer.wait_closed();return out
  async def test_chunked_video_creation_hits_only_coordinator_with_decoded_body(self):
-  out=await self.request(b'POST /v1/videos HTTP/1.1\r\nHost: local\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n')
-  self.assertIn(b'200',out.split(b'\r\n')[0]);self.assertEqual(self.calls,[('coordinator','POST','/v1/videos',b'{}')])
+  body=json.dumps({'prompt':'a scene'}).encode()
+  out=await self.request(b'POST /v1/videos HTTP/1.1\r\nHost: local\r\nTransfer-Encoding: chunked\r\n\r\n'+f'{len(body):x}\r\n'.encode()+body+b'\r\n0\r\n\r\n')
+  self.assertIn(b'200',out.split(b'\r\n')[0]);self.assertEqual(self.calls,[('coordinator','POST','/v1/videos',body)])
  async def test_old_video_get_falls_back_to_head_only_after_404(self):
   out=await self.request(b'GET /v1/videos/video_unknown HTTP/1.1\r\nHost: local\r\n\r\n')
   self.assertIn(b'200',out.split(b'\r\n')[0]);self.assertEqual([x[0] for x in self.calls],['coordinator','head'])
  async def test_creation_outage_never_falls_back_to_head(self):
   self.servers[2].close();await self.servers[2].wait_closed()
-  out=await self.request(b'POST /v1/videos HTTP/1.1\r\nHost: local\r\nContent-Length: 2\r\n\r\n{}')
+  body=json.dumps({'prompt':'a scene'}).encode()
+  out=await self.request(f'POST /v1/videos HTTP/1.1\r\nHost: local\r\nContent-Length: {len(body)}\r\n\r\n'.encode()+body)
   self.assertIn(b'503',out.split(b'\r\n')[0]);self.assertEqual(self.calls,[])
 
 if __name__=='__main__':unittest.main()

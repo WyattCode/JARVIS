@@ -47,7 +47,7 @@ pub const Local = struct {
     }
 };
 
-const vtable: backend.Backend.VTable = .{ .transcribe = transcribe, .speak = speak, .stream = chatStream, .start_job = startJob, .wait_job = waitJob, .offer = offer, .check = check, .paused = paused, .manage = manage };
+const vtable: backend.Backend.VTable = .{ .transcribe = transcribe, .speak = speak, .stream = chatStream, .start_job = startJob, .wait_job = waitJob, .offer = offer, .check = check, .check_voice = checkVoice, .paused = paused, .manage = manage };
 
 fn self(ptr: *anyopaque) *Local {
     return @ptrCast(@alignCast(ptr));
@@ -181,7 +181,11 @@ fn speak(ptr: *anyopaque, a: std.mem.Allocator, text: []const u8, o: backend.Say
     var counted: Counted = .{ .sink = sink };
     const out: backend.PcmSink = .{ .ctx = &counted, .write = Counted.write };
     for (candidates, 0..) |model, n| {
-        const voice = if (n > 0) "" else voiceFor(app, model, wanted);
+        const voice = voiceFor(app, model, wanted);
+        if (wanted.len > 0 and voice.len == 0) {
+            why.set("model '{s}' has no voice '{s}'", .{ model orelse "default", wanted });
+            return error.Failed;
+        }
         speakWith(app, a, model, voice, text, out, stop, why) catch |err| {
             if (err != error.Failed or n + 1 == candidates.len or counted.samples > 0) return err;
             std.log.warn("voice: speech model {s} failed ({s}); trying {s}", .{ model orelse "default", why.message, candidates[n + 1] orelse "default" });
@@ -341,6 +345,17 @@ fn waitJob(ptr: *anyopaque, a: std.mem.Allocator, job: backend.Job, timeout_s: u
     const urls = a.alloc([]const u8, j.files.len) catch return .{ .status = "completed" };
     for (urls, j.files) |*u, f| u.* = std.fmt.allocPrint(a, "http://{s}/v1/files/{s}/{s}", .{ l.host, j.id, f }) catch "";
     return .{ .status = "completed", .urls = urls };
+}
+
+// A selected voice must belong to the selected model; do not silently substitute it.
+fn checkVoice(ptr: *anyopaque, model: []const u8, voice: []const u8, why: *Why) bool {
+    const app = self(ptr).app;
+    const chosen = if (model.len > 0) model else app.cfg.voice.speech_model;
+    if (chosen.len == 0) return true; // No fixed model: the resolver selects by voice.
+    const c = app.cfg.tool(chosen) orelse return true; // The model check reports invalid models.
+    if (engine.voices(c) == null or engine.hasVoice(c, voice)) return true;
+    why.set("model '{s}' has no voice '{s}'", .{ chosen, voice });
+    return false;
 }
 
 fn offer(ptr: *anyopaque) backend.Offer {

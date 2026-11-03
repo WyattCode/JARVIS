@@ -65,6 +65,9 @@ pub fn apply(a: std.mem.Allocator, s: *Settings, v: Value, b: backend.Backend, w
     if (o.get("voice")) |x| s.voice = try a.dupe(u8, str(x) orelse return bad(why, "session.voice must be a string", .{}));
     if (o.get("model")) |x| s.model = try model(a, b, .chat, x, "model", why);
     if (o.get("speech_model")) |x| s.speech_model = try model(a, b, .speech, x, "speech_model", why);
+    if (s.voice.len > 0) if (b.vtable.check_voice) |check_voice| {
+        if (!check_voice(b.ptr, s.speech_model, s.voice, why)) return error.Invalid;
+    };
     if (o.get("input_audio_transcription")) |x| switch (x) {
         .null => {},
         .object => |t| {
@@ -288,6 +291,7 @@ test "session.update: fields apply one by one, refusals name the field" {
     const a = arena.allocator();
     var vt: backend.Backend.VTable = undefined;
     vt.check = NoModels.check;
+    vt.check_voice = null;
     var dummy: u8 = 0;
     const b: backend.Backend = .{ .ptr = &dummy, .vtable = &vt };
     var s: Settings = try Settings.defaults(.{}).dupe(a);
@@ -327,4 +331,30 @@ test "session.update: fields apply one by one, refusals name the field" {
     try std.testing.expect(obj.object.get("reasoning").?.bool);
     try std.testing.expect(obj.object.get("turn_detection").? == .null);
     try std.testing.expectEqualStrings("inf", obj.object.get("max_response_output_tokens").?.string);
+}
+
+test "session.update rejects a voice outside the selected speech model" {
+    const Fake = struct {
+        fn check(_: *anyopaque, _: backend.Role, _: []const u8, _: *backend.Why) bool {
+            return true;
+        }
+        fn voice(_: *anyopaque, model_name: []const u8, name: []const u8, why: *backend.Why) bool {
+            if (std.mem.eql(u8, model_name, "speech") and std.mem.eql(u8, name, "kept")) return true;
+            why.set("model '{s}' has no voice '{s}'", .{ model_name, name });
+            return false;
+        }
+    };
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var vt: backend.Backend.VTable = undefined;
+    vt.check = Fake.check;
+    vt.check_voice = Fake.voice;
+    var dummy: u8 = 0;
+    const b: backend.Backend = .{ .ptr = &dummy, .vtable = &vt };
+    var s: Settings = try Settings.defaults(.{}).dupe(a);
+    var why: backend.Why = .{};
+    try apply(a, &s, try std.json.parseFromSliceLeaky(Value, a, "{\"speech_model\":\"speech\",\"voice\":\"kept\"}", .{}), b, &why);
+    try std.testing.expectError(error.Invalid, apply(a, &s, try std.json.parseFromSliceLeaky(Value, a, "{\"voice\":\"retired\"}", .{}), b, &why));
+    try std.testing.expectEqualStrings("model 'speech' has no voice 'retired'", why.message);
 }

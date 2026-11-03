@@ -53,7 +53,7 @@ fn wait(s: *Session, c: Call) void {
     s.mutex.lockUncancelable(s.io);
     if (!s.closing) s.emit.send(a, "localrouter.job.done", .{ .call_id = c.call_id, .job_id = job_id, .kind = @tagName(kind), .status = outcome.status, .urls = outcome.urls, .@"error" = outcome.@"error" });
     s.mutex.unlock(s.io);
-    waitForVoice(s); // the models a video unloaded come back right after it: then say it is ready
+    if (s.voice.announce_media_results) waitForVoice(s); // the models a video unloaded come back right after it: then say it is ready
     const back = comingBack(s, a);
     const output = std.json.Stringify.valueAlloc(a, .{ .status = outcome.status, .job_id = job_id, .urls = outcome.urls, .@"error" = outcome.@"error", .coming_back = back, .note = if (back.len > 0) "these models were unloaded to make room and come back by themselves" else null }, .{ .emit_null_optional_fields = false }) catch return;
     answer(s, a, c, output, s.voice.announce_media_results);
@@ -82,7 +82,7 @@ fn waitForVoice(s: *Session) void {
 }
 
 /// Adds the call's output to the conversation and asks for the reply that reads it.
-fn answer(s: *Session, a: std.mem.Allocator, c: Call, output: []const u8, respond: bool) void {
+fn answer(s: *Session, a: std.mem.Allocator, c: Call, output: []const u8, announce: bool) void {
     s.mutex.lockUncancelable(s.io);
     defer s.mutex.unlock(s.io);
     if (s.closing) return;
@@ -92,10 +92,9 @@ fn answer(s: *Session, a: std.mem.Allocator, c: Call, output: []const u8, respon
     it.call_id = it.arena.allocator().dupe(u8, c.call_id) catch "";
     it.text = it.arena.allocator().dupe(u8, output) catch "";
     s.emit.send(a, "conversation.item.created", .{ .previous_item_id = prev, .item = session.itemValue(a, it, s.settings.audio) catch Value.null });
-    if (respond) {
-        s.fresh = true;
-        s.push(.{ .respond = .{ .auto = true } }) catch {};
-    }
+    if (!announce) return;
+    s.fresh = true;
+    s.push(.{ .respond = .{ .auto = true } }) catch {};
 }
 
 /// The job a tool call's arguments ask for; null with `why` set when they are not usable.

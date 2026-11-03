@@ -19,6 +19,8 @@ import time
 import urllib.parse
 
 COOKIE = '__Host-jarvis_session'
+# Server sessions do not expire by time. Clients may cap cookie retention.
+COOKIE_MAX_AGE = 10 * 365 * 86400
 
 
 class PublicAccess:
@@ -173,10 +175,10 @@ class PublicAccess:
             if not valid:
                 await self.reply(writer,401,self.page('账户或密码不正确。'));return False
             self.attempts.pop(key,None)
-            token=secrets.token_urlsafe(32);session_key=hashlib.sha256(token.encode()).hexdigest();self.sessions[session_key]=self.clock()+86400;self.session_users[session_key]=user['username']
+            token=secrets.token_urlsafe(32);session_key=hashlib.sha256(token.encode()).hexdigest();self.sessions[session_key]=float('inf');self.session_users[session_key]=user['username']
             while len(self.sessions)>20:
                 expired,_=self.sessions.popitem(last=False);self.session_users.pop(expired,None)
-            await self.reply(writer,303,extra=[('Location','/voice'),('Set-Cookie',f'{COOKIE}={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=86400')]);return False
+            await self.reply(writer,303,extra=[('Location','/voice'),('Set-Cookie',f'{COOKIE}={token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age={COOKIE_MAX_AGE}')]);return False
         if not session:
             if method=='GET' and path in ('/','/voice','/voice/','/account'):
                 await self.reply(writer,303,extra=[('Location','/login')])
@@ -199,9 +201,9 @@ def create(filename, username, credentials):
     password=secrets.token_urlsafe(24);salt=secrets.token_bytes(16);iterations=600000
     cfg={'username':username,'salt':salt.hex(),'iterations':iterations,'password_hash':hashlib.pbkdf2_hmac('sha256',password.encode(),salt,iterations).hex()}
     with open(path,'x',opener=lambda p,f:os.open(p,f,0o600))as file:json.dump(cfg,file)
-    with open(credentials,'x',opener=lambda p,f:os.open(p,f,0o600))as file:file.write(f'账户：{username}\n密码：{password}\n登录：https://jarvis.example.com/login\n账户与退出：https://jarvis.example.com/account\n')
+    with open(credentials,'x',opener=lambda p,f:os.open(p,f,0o600))as file:file.write(f'账户：{username}\n密码：{password}\n登录：https://jarvis.odn.cc/login\n账户与退出：https://jarvis.odn.cc/account\n')
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--create',required=True);parser.add_argument('--username',default='user');parser.add_argument('--credentials',required=True)
+    parser=argparse.ArgumentParser();parser.add_argument('--create',required=True);parser.add_argument('--username',default='wyatt');parser.add_argument('--credentials',required=True)
     args=parser.parse_args();create(args.create,args.username,args.credentials)

@@ -57,6 +57,9 @@ pub const Writer = struct {
 
 /// Writes interleaved f32 samples in [-1, 1] as 16-bit PCM WAV.
 pub fn writeWav(io: Io, path: []const u8, samples: []const f32, rate: u32, channels: u16) !void {
+    // Reject invalid synthesis output before opening/truncating the destination.
+    // clamp(NaN, -1, 1) can become +1 and otherwise produces a full-scale DC track.
+    for (samples) |sample| if (!std.math.isFinite(sample)) return error.InvalidAudioSamples;
     var file = try Io.Dir.cwd().createFile(io, path, .{});
     defer file.close(io);
     var buf: [64 * 1024]u8 = undefined;
@@ -77,4 +80,26 @@ pub fn writeWav(io: Io, path: []const u8, samples: []const f32, rate: u32, chann
     try w.writeInt(u32, data, .little);
     for (samples) |s| try w.writeInt(i16, @intFromFloat(std.math.clamp(s, -1, 1) * 32767), .little);
     try w.flush();
+}
+
+test "WAV finite validation rejects invalid audio without overwriting output" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var random: [8]u8 = undefined;
+    io.random(&random);
+    const path = try std.fmt.allocPrint(gpa, "/tmp/localrouter-wav-check-{x}", .{random});
+    defer gpa.free(path);
+    defer Io.Dir.cwd().deleteFile(io, path) catch {};
+    try writeWav(io, path, &.{ -0.5, 0, 0.5 }, 32000, 1);
+    const original = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1024));
+    defer gpa.free(original);
+    try std.testing.expectEqual(@as(usize, 50), original.len);
+    try std.testing.expectEqual(@as(i16, -16383), std.mem.readInt(i16, original[44..46], .little));
+    try std.testing.expectEqual(@as(i16, 16383), std.mem.readInt(i16, original[48..50], .little));
+    for ([_]f32{ std.math.nan(f32), std.math.inf(f32), -std.math.inf(f32) }) |bad| {
+        try std.testing.expectError(error.InvalidAudioSamples, writeWav(io, path, &.{ 0, bad }, 32000, 1));
+        const after = try Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1024));
+        defer gpa.free(after);
+        try std.testing.expectEqualSlices(u8, original, after);
+    }
 }

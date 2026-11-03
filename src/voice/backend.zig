@@ -20,6 +20,8 @@ pub const PcmSink = struct {
 pub const Hear = struct { model: []const u8 = "", language: []const u8 = "", prompt: []const u8 = "", worker_ms: ?*u64 = null, detected: ?*[]const u8 = null, greedy: bool = false };
 pub const Say = struct { model: []const u8 = "", voice: []const u8 = "" };
 
+pub const warm_sentence = "Hello.";
+
 pub const JobKind = enum { image, video };
 
 /// A tool call's job: what the model asked for.
@@ -55,11 +57,19 @@ pub const Backend = struct {
         wait_job: *const fn (ptr: *anyopaque, a: std.mem.Allocator, job: Job, timeout_s: u32, stop: *Stop) Outcome,
         offer: *const fn (ptr: *anyopaque) Offer,
         check: *const fn (ptr: *anyopaque, role: Role, name: []const u8, why: *Why) bool,
+        check_voice: ?*const fn (ptr: *anyopaque, model: []const u8, voice: []const u8, why: *Why) bool = null,
         paused: ?*const fn (ptr: *anyopaque) bool = null, // a voice model is unloaded to make room (it comes back)
         manage: ?*const fn (ptr: *anyopaque, a: std.mem.Allocator, name: []const u8, arguments: []const u8) Managed = null,
+        speech_warm: ?*const fn (ptr: *anyopaque, a: std.mem.Allocator, o: Say) bool = null,
     };
 
     /// True while a voice model is unloaded to make room for another job; it comes back by itself.
+    // Cross-service model lifetime is not known here: absent callback means warm safely for this call.
+    pub fn speechWarm(b: Backend, a: std.mem.Allocator, o: Say) bool {
+        const f = b.vtable.speech_warm orelse return false;
+        return f(b.ptr, a, o);
+    }
+
     pub fn paused(b: Backend) bool {
         return if (b.vtable.paused) |f| f(b.ptr) else false;
     }

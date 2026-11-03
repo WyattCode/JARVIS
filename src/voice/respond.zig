@@ -27,6 +27,7 @@ pub const Response = struct {
     stop: Stop = .{},
     reason: []const u8 = "", // why it was cancelled: turn_detected or client_cancelled
     audio: bool = true,
+    ack_at: ?usize = null, // start of the server's acknowledgement for a pending tool call
     text: std.ArrayList(u8) = .empty,
     queue: std.ArrayList(Chunk) = .empty, // sentences for the speaker
     closed: bool = false, // no more sentences will come
@@ -47,7 +48,7 @@ pub const Response = struct {
 /// process): the audio a reply sent from its text_done to its speech_done, over that time, once it holds free_min_ms
 /// (the part of a sentence under way, and each later one's start, count). A client given it with text_done can start
 /// a reply already written at that rate, instead of measuring the rate of a stream that so far shared the GPU with the
-/// chat model (a fresh session's long reply was held 2.9 to 5.2 s for that on Spark-01).
+/// chat model (a fresh session's long reply was held 2.9 to 5.2 s for that on DGX-01).
 var free_speech_rate: std.atomic.Value(u32) = .init(0);
 const free_min_ms = 500; // shorter spans read low (a sentence's start counts): the safe side
 
@@ -85,10 +86,14 @@ const Pass = enum { partial, early, final };
 
 /// Under the lock: the chat server reads the conversation as the next turn's request will begin it (the same system
 /// prompt, tools and history; `max_tokens` 1, the reply discarded), so that request finds it in the server's prefix
-/// cache and pays only for the new turn. On Spark-01 the first request after a new assistant message or a barge-in took
+/// cache and pays only for the new turn. On DGX-01 the first request after a new assistant message or a barge-in took
 /// 260 to 390 ms to its first token, the others 165 to 185. One at a time, off the worker thread.
 pub fn prime(s: *Session) void {
-    if (!s.voice.prime_chat or s.priming or s.closing) return;
+    if (!s.voice.prime_chat or s.closing) return;
+    if (s.priming) { // the one in flight read the session before this change: once more after it
+        s.prime_again = true;
+        return;
+    }
     if (s.primer) |t| t.join(); // finished: `priming` is cleared as its last step
     s.primer = null;
     s.priming = true;
@@ -99,12 +104,26 @@ pub fn prime(s: *Session) void {
 }
 
 fn primeChat(s: *Session) void {
+    while (true) {
+        primeOnce(s);
+        s.mutex.lockUncancelable(s.io);
+        defer s.mutex.unlock(s.io);
+        if (s.prime_again and !s.closing) {
+            s.prime_again = false;
+            continue;
+        }
+        s.priming = false;
+        readyCheck(s);
+        return;
+    }
+}
+
+fn primeOnce(s: *Session) void {
     var arena: std.heap.ArenaAllocator = .init(s.gpa);
     defer arena.deinit();
     const a = arena.allocator();
     s.mutex.lockUncancelable(s.io);
     var req = request(s, a, .{ .auto = true }) catch {
-        s.priming = false;
         s.mutex.unlock(s.io);
         return;
     };
@@ -113,9 +132,6 @@ fn primeChat(s: *Session) void {
     std.log.info("voice {s}: chat prime (the conversation so far, no new turn; max_tokens 1)", .{s.id});
     var why: backend.Why = .{};
     _ = s.backend.stream(a, &req, .{ .ctx = s, .text = discard }, &s.close_stop, &why) catch {};
-    s.mutex.lockUncancelable(s.io);
-    s.priming = false;
-    s.mutex.unlock(s.io);
 }
 
 fn discard(_: *anyopaque, _: []const u8) void {}
@@ -139,33 +155,120 @@ fn warm(s: *Session) void {
     s.last_heard_ns = s.clock();
 }
 
-var speech_warm: std.atomic.Value(bool) = .init(false); // a sentence has been spoken in this process
-var speech_warming: std.atomic.Value(bool) = .init(false); // one session at a time speaks the warm-up
-const warm_sentence = "Hello.";
+pub const SpeechReady = enum { warm, warmed, paused, failed, off };
 
-/// Nothing has been spoken in this process yet (voice.warm_speech).
-pub fn speechCold() bool {
-    return !speech_warm.load(.monotonic);
+/// Under the lock: a readiness check begins (at connect, after a voice change, when voice comes back). It ends with
+/// `localrouter.session.ready` once the speech warm-up and the chat prime it waits for are done (`readyCheck`).
+pub fn getReady(s: *Session) void {
+    if (!s.getting_ready) {
+        s.getting_ready = true;
+        s.ready_from_ns = s.clock();
+        s.speech_ready = .off;
+    }
+    warmUp(s);
+    readyCheck(s);
 }
 
-/// On its own thread at connect (Session.warmer): the warm-up sentence through the session's speech model and voice,
-/// the audio discarded, so the model's first job is paid before a reply needs it. One short word: the engine speaks one
-/// request at a time, and a turn's reply waits behind it (a cold first sentence of 2 s took 4.7 s on Spark-01). Its rate
-/// is not kept (a first job's, and a second sentence collided with the first turn there).
-pub fn warmSpeech(s: *Session) void {
-    if (!speechCold() or speech_warming.swap(true, .acq_rel)) return;
-    defer speech_warming.store(false, .release);
+/// Under the lock: once nothing it waits for runs, the readiness check's event. A client may talk before it; the first
+/// reply then waits for what is still warming.
+pub fn readyCheck(s: *Session) void {
+    if (!s.getting_ready or s.warming or s.priming or s.closing) return;
+    s.getting_ready = false;
+    var tmp: std.heap.ArenaAllocator = .init(s.gpa);
+    defer tmp.deinit();
+    const ms: u64 = @intCast(@max(@divTrunc(s.clock() - s.ready_from_ns, std.time.ns_per_ms), 0));
+    const chat_state: []const u8 = if (s.voice.prime_chat) "primed" else "off";
+    s.emit.send(tmp.allocator(), "localrouter.session.ready", .{ .speech = @tagName(s.speech_ready), .chat = chat_state, .voice = s.settings.voice, .speech_model = s.settings.speech_model, .ms = ms });
+    std.log.info("voice {s}: ready in {d} ms (speech {s}, voice '{s}')", .{ s.id, ms, @tagName(s.speech_ready), s.settings.voice });
+}
+
+/// Under the lock: the session's voice is warmed on its own thread (Session.warmer) unless warm-ups are off or the
+/// session speaks no audio; one in flight is followed by another when the voice changed meanwhile.
+fn warmUp(s: *Session) void {
+    if (!s.voice.warm_speech or !s.settings.audio or s.closing) return;
+    if (s.warming) {
+        s.warm_again = true;
+        if (s.warm_stop) |st| st.set(s.io);
+        return;
+    }
+    if (s.warmer) |t| t.join(); // finished: `warming` is cleared as its last step
+    s.warmer = null;
+    s.warming = true;
+    s.warmer = std.Thread.spawn(.{}, warmSpeech, .{s}) catch {
+        s.warming = false;
+        return;
+    };
+}
+
+const voice_settle_ms = 300;
+
+fn warmSpeech(s: *Session) void {
+    var warmed = false; // some pass spoke: ready says `warmed`, even when the last pass found its voice warm
+    while (true) {
+        const how = warmOnce(s);
+        if (how == .warmed) warmed = true;
+        s.mutex.lockUncancelable(s.io);
+        defer s.mutex.unlock(s.io);
+        if (s.warm_again and !s.closing) { // the voice changed: the latest is the one to warm
+            s.warm_again = false;
+            continue;
+        }
+        s.warming = false;
+        s.speech_ready = if (how == .warm and warmed) .warmed else how orelse .failed;
+        readyCheck(s);
+        return;
+    }
+}
+
+/// The session's voice, unless its speech model's loaded instance last spoke it (`Backend.speechWarm`): the warm-up
+/// sentence in it, the audio discarded, so the model's first job after a load and the voice's references (a voice
+/// switch: 4 to 6 s to first audio on the Mac's Drama 3, which keeps one voice's prefix) are paid before a reply needs
+/// them. One short word: the engine speaks one request at a time, and a turn's reply waits behind it (a cold first
+/// sentence of 2 s took 4.7 s on DGX-01). Its rate is not kept (a first job's, and a second sentence collided with the
+/// first turn there). Null: superseded, the voice changed before or while it spoke (`warmUp` stops a stale one).
+fn warmOnce(s: *Session) ?SpeechReady {
     var tmp: std.heap.ArenaAllocator = .init(s.gpa);
     defer tmp.deinit();
     const a = tmp.allocator();
     s.mutex.lockUncancelable(s.io);
     const say: backend.Say = .{ .model = a.dupe(u8, s.settings.speech_model) catch "", .voice = a.dupe(u8, s.settings.voice) catch "" };
+    const settle_first = s.settle_voice;
+    s.settle_voice = false;
     s.mutex.unlock(s.io);
+    if (s.backend.paused()) return .paused; // it would be text only; voice.resumed checks again
+    if (s.backend.speechWarm(a, say)) return .warm; // its default voice, for an empty one: as a reply would speak it
+    if (settle_first) { // a connect: the client may be about to name its voice
+        var waited: u32 = 0;
+        while (waited < voice_settle_ms) : (waited += 20) {
+            s.mutex.lockUncancelable(s.io);
+            const changed = s.warm_again or s.closing;
+            s.mutex.unlock(s.io);
+            if (changed) return null;
+            Io.sleep(s.io, .fromMilliseconds(20), .awake) catch break;
+        }
+    }
+    var stop: Stop = .{}; // set when the voice changes (a stale warm-up is dropped) or the session closes
+    s.mutex.lockUncancelable(s.io);
+    if (s.closing or s.warm_again) {
+        s.mutex.unlock(s.io);
+        return null;
+    }
+    s.warm_stop = &stop;
+    s.mutex.unlock(s.io);
+    defer {
+        s.mutex.lockUncancelable(s.io);
+        s.warm_stop = null;
+        s.mutex.unlock(s.io);
+    }
     var why: backend.Why = .{};
     const began = s.clock();
-    s.backend.speak(a, warm_sentence, say, .{ .ctx = s, .write = discardPcm }, &s.close_stop, &why) catch return;
-    speech_warm.store(true, .monotonic);
-    std.log.info("voice {s}: speech warmed in {d} ms", .{ s.id, @divTrunc(s.clock() - began, std.time.ns_per_ms) });
+    s.backend.speak(a, backend.warm_sentence, say, .{ .ctx = s, .write = discardPcm }, &stop, &why) catch {
+        if (!stop.cancelled()) return .failed;
+        std.log.info("voice {s}: warm-up in voice '{s}' dropped: the voice changed", .{ s.id, say.voice });
+        return null;
+    };
+    std.log.info("voice {s}: speech warmed in {d} ms (voice '{s}')", .{ s.id, @divTrunc(s.clock() - began, std.time.ns_per_ms), say.voice });
+    return .warmed;
 }
 
 fn discardPcm(_: *anyopaque, _: []const i16, _: u32) void {}
@@ -380,7 +483,7 @@ const Feed = struct {
 
     /// The model has begun a tool call: the rest of the stream is its arguments, which nobody hears. A picture or video
     /// call with nothing said before it gets the short "making it" its tool description asks for, so the user hears
-    /// that the turn was taken while the arguments are written and the job runs (Spark-01: 12 to 15 s of silence before).
+    /// that the turn was taken while the arguments are written and the job runs (DGX-01: 12 to 15 s of silence before).
     fn onTool(ctx: *anyopaque, name: []const u8) void {
         const f: *Feed = @ptrCast(@alignCast(ctx));
         if (f.ended) return;
@@ -388,6 +491,7 @@ const Feed = struct {
         const held = f.think.flush(f.s.gpa, a) catch "";
         f.add(f.lead.pass(f.s.gpa, a, held, true) catch held, false); // what the filters held back is said first
         const said = std.mem.trim(u8, f.r.text.items, " \t\r\n").len > 0;
+        f.r.ack_at = f.r.text.items.len;
         const video = std.mem.eql(u8, name, "generate_video");
         if (!said and f.r.audio and (video or std.mem.eql(u8, name, "generate_image"))) f.add(if (video) ack_video else ack_image, false);
         if (video and f.r.audio and pausesVoice(f.s, a)) f.add(ack_pause, false);
@@ -472,7 +576,6 @@ fn sentence(s: *Session, r: *Response, say: backend.Say, c: Response.Chunk) bool
     s.mutex.lockUncancelable(s.io);
     defer s.mutex.unlock(s.io);
     r.spoken.append(s.gpa, .{ .end_ms = r.audio_ms, .text_end = c.text_end }) catch {};
-    speech_warm.store(true, .monotonic);
     return true;
 }
 
@@ -595,6 +698,10 @@ fn finish(s: *Session, r: *Response, result: backend.Error!chat.Result, why: *ba
         for (r.spoken.items) |sp| end = sp.text_end;
         kept = std.mem.trimEnd(u8, kept[0..@min(end, kept.len)], " \n");
     }
+    // Cancelled calls do not run: keep their synthetic promise out of the next turn's history.
+    if (r.stop.cancelled()) if (r.ack_at) |at| {
+        kept = std.mem.trimEnd(u8, kept[0..@min(at, kept.len)], " \n");
+    };
     var outputs: std.ArrayList(Value) = .empty;
     if (s.find(r.item_id)) |it| {
         it.text = it.arena.allocator().dupe(u8, kept) catch "";

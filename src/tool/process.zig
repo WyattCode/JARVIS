@@ -38,6 +38,7 @@ pub const ProcessTool = struct {
     pid: std.atomic.Value(i32) = .init(0), // the worker's pid (= its process group), for abort from other threads
     aborted: std.atomic.Value(bool) = .init(false),
     soft_cancel: std.atomic.Value(bool) = .init(false), // the worker said `"cancel":"signal"` when it loaded
+    in_flight: std.atomic.Value(bool) = .init(false),
     st: std.atomic.Value(tool.State) = .init(.unloaded),
     fail_msg: [2048]u8 = undefined,
     fail: tool.Failure = .{},
@@ -112,7 +113,8 @@ pub const ProcessTool = struct {
         const p = self(ptr);
         const pid = p.pid.load(.acquire);
         if (!p.soft_cancel.load(.acquire) or pid <= 0) return false;
-        return posix.system.kill(pid, posix.SIG.USR1) == 0;
+        if (p.in_flight.load(.seq_cst)) _ = posix.system.kill(pid, posix.SIG.USR1);
+        return true;
     }
 
     fn load(ptr: *anyopaque) tool.Error!u64 {
@@ -130,7 +132,7 @@ pub const ProcessTool = struct {
         p.st.store(.loading, .release);
         p.spawn() catch |err| return p.failed(.unloaded, tool.Error.LoadFailed, "could not start the worker: {s}", .{@errorName(err)});
         wire.send(p.stdinFd(), p.setup.gpa, wire.Command{ .op = .load }) catch return p.died(tool.Error.LoadFailed);
-        const r = p.awaitReply(null, p.cfg.load_timeout_s) catch |err| return p.died(err);
+        const r = p.awaitReply(null, p.cfg.load_timeout_s, null) catch |err| return p.died(err);
         defer r.deinit();
         if (r.value.ok != true) {
             p.kill();
@@ -153,15 +155,18 @@ pub const ProcessTool = struct {
             return p.proxy(job, arena);
         }
         p.st.store(.busy, .release);
+        const soft = p.soft_cancel.load(.acquire);
+        if (soft and isCancelled(job)) return p.cancelled(); // cancelled before it reached the worker: nothing to undo
         const cmd: wire.Command = .{ .op = .generate, .id = job.id, .dir = job.dir, .request = job.request };
         wire.send(p.stdinFd(), p.setup.gpa, cmd) catch return p.died(tool.Error.WorkerDied);
-        const r = p.awaitReply(sink, p.cfg.generate_timeout_s) catch |err| return p.died(err);
+        p.in_flight.store(true, .seq_cst); // then read `cancelled`: a cancel either sees this or is seen below
+        const r = p.awaitReply(sink, p.cfg.generate_timeout_s, if (soft) job.cancelled else null) catch |err| {
+            p.in_flight.store(false, .seq_cst);
+            return p.died(err);
+        };
+        p.in_flight.store(false, .seq_cst);
         defer r.deinit();
-        if (r.value.ok != true and std.mem.eql(u8, r.value.type, "cancelled")) { // ended early on `cancel`; still loaded
-            p.fail = .{ .message = "cancelled", .type = "server_error" };
-            p.st.store(.ready, .release);
-            return tool.Error.Cancelled;
-        }
+        if (r.value.ok != true and std.mem.eql(u8, r.value.type, "cancelled")) return p.cancelled(); // ended early; still loaded
         if (r.value.ok != true) {
             const t = for ([_][]const u8{ "invalid_request_error", "service_unavailable" }) |known| {
                 if (std.mem.eql(u8, r.value.type, known)) break known;
@@ -247,14 +252,42 @@ pub const ProcessTool = struct {
         p.st.store(.unloaded, .release);
     }
 
-    /// Reads worker lines until the final reply, forwarding progress; `timeout_s` bounds each silence.
-    fn awaitReply(p: *ProcessTool, sink: ?tool.Sink, timeout_s: u32) tool.Error!std.json.Parsed(wire.Reply) {
-        const ms: i32 = @intCast(@min(@as(u64, timeout_s) * 1000, std.math.maxInt(i32)));
+    /// A generate that ended early on `cancel`: the worker stays loaded.
+    fn cancelled(p: *ProcessTool) tool.Error {
+        p.fail = .{ .message = "cancelled", .type = "server_error" };
+        p.st.store(.ready, .release);
+        return tool.Error.Cancelled;
+    }
+
+    fn isCancelled(job: *const tool.Job) bool {
+        return if (job.cancelled) |c| c.load(.seq_cst) else false;
+    }
+
+    /// How often SIGUSR1 is sent again while a cancelled generate has not replied.
+    const resignal_ms = 200;
+
+    /// Reads worker lines until the final reply, forwarding progress; `timeout_s` bounds each silence. Once `cancel_flag`
+    /// is set, SIGUSR1 goes to the worker every `resignal_ms` until it replies: the first may land before the worker has
+    /// read the generate, when it ignores it.
+    fn awaitReply(p: *ProcessTool, sink: ?tool.Sink, timeout_s: u32, cancel_flag: ?*const std.atomic.Value(bool)) tool.Error!std.json.Parsed(wire.Reply) {
+        const ms: i64 = @min(@as(i64, timeout_s) * 1000, std.math.maxInt(i32));
+        var silent: i64 = 0; // since the last line
         while (true) {
-            const line = p.lines.next(ms) catch |err| return switch (err) {
-                error.Timeout => tool.Error.Timeout,
-                else => if (p.aborted.load(.acquire)) tool.Error.Cancelled else tool.Error.WorkerDied,
+            const cancelling = if (cancel_flag) |c| c.load(.seq_cst) else false;
+            if (cancelling) {
+                const pid = p.pid.load(.acquire);
+                if (pid > 0) _ = posix.system.kill(pid, posix.SIG.USR1);
+            }
+            const wait: i64 = if (cancel_flag != null) @min(ms - silent, resignal_ms) else ms;
+            const line = p.lines.next(@intCast(wait)) catch |err| switch (err) {
+                error.Timeout => {
+                    silent += wait;
+                    if (silent >= ms) return tool.Error.Timeout;
+                    continue;
+                },
+                else => return if (p.aborted.load(.acquire)) tool.Error.Cancelled else tool.Error.WorkerDied,
             };
+            silent = 0;
             const r = std.json.parseFromSlice(wire.Reply, p.setup.gpa, line, .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch continue;
             if (r.value.ok != null) return r;
             defer r.deinit();
@@ -362,3 +395,84 @@ pub const ProcessTool = struct {
         return std.mem.trimStart(u8, text[cut..], "\n");
     }
 };
+
+/// A worker that, like a real one, honours SIGUSR1 only inside a generate, which lasts 3 s unless cancelled.
+const slow_worker =
+    \\import json, signal, sys, time
+    \\busy = False
+    \\class Cancelled(Exception): pass
+    \\def on_usr1(*_):
+    \\    if busy: raise Cancelled()
+    \\signal.signal(signal.SIGUSR1, on_usr1)
+    \\for line in sys.stdin:
+    \\    op = json.loads(line)["op"]
+    \\    if op == "load": out = {"ok": True, "resident": 1, "cancel": "signal"}
+    \\    elif op == "exit": break
+    \\    else:
+    \\        try:
+    \\            busy = True
+    \\            time.sleep(3); out = {"ok": True, "files": []}
+    \\        except Cancelled: out = {"ok": False, "type": "cancelled", "error": "cancelled"}
+    \\        finally: busy = False
+    \\    print(json.dumps(out), flush=True)
+;
+
+test "a cancel before the generate reaches the worker is not lost: before the write, and in the moment after it" {
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "worker.py", .data = slow_worker });
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = path_buf[0..try tmp.dir.realPath(io, &path_buf)];
+    const script = try std.fmt.allocPrint(gpa, "{s}/worker.py", .{dir});
+    defer gpa.free(script);
+    var environ = std.process.Environ.Map.init(gpa);
+    defer environ.deinit();
+    if (std.c.getenv("PATH")) |v| try environ.put("PATH", std.mem.span(v));
+    const cfg: ToolConfig = .{ .id = "slow", .kind = .speech, .cmd = &.{ "python3", script }, .resident_bytes = 1 };
+    var p = try ProcessTool.init(.{ .gpa = gpa, .io = io, .self_exe = "/nonexistent", .environ = &environ, .log_dir = dir }, &cfg);
+    defer p.deinit();
+    const t = p.asTool();
+    _ = try t.load();
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const sink: tool.Sink = .{ .ctx = undefined, .progress = struct {
+        fn f(_: *anyopaque, _: tool.Progress) void {}
+    }.f };
+
+    // Cancelled while still queued for the worker (loading, waiting on the speech gate): never sent, ends at once.
+    var flag: std.atomic.Value(bool) = .init(true);
+    try std.testing.expect(t.cancel());
+    const job: tool.Job = .{ .id = "a", .dir = dir, .request = .{ .speech = .{ .input = "hi" } }, .cancelled = &flag };
+    const t0 = Io.Clock.awake.now(io);
+    try std.testing.expectError(tool.Error.Cancelled, t.generate(&job, sink, arena.allocator()));
+    try std.testing.expect(t0.durationTo(Io.Clock.awake.now(io)).toMilliseconds() < 500);
+    try std.testing.expectEqual(tool.State.ready, t.state());
+
+    // Cancelled the instant after the write, before the worker has read it: its first SIGUSR1 is ignored, a later
+    // one ends the generate well before its 3 s.
+    for (0..3) |_| {
+        var later: std.atomic.Value(bool) = .init(false);
+        const j2: tool.Job = .{ .id = "b", .dir = dir, .request = .{ .speech = .{ .input = "hi" } }, .cancelled = &later };
+        const Canceller = struct {
+            fn run(tl: tool.Tool, f: *std.atomic.Value(bool), pt: *ProcessTool) void {
+                while (!pt.in_flight.load(.seq_cst)) std.Thread.yield() catch {};
+                f.store(true, .seq_cst);
+                _ = tl.cancel();
+            }
+        };
+        const th = try std.Thread.spawn(.{}, Canceller.run, .{ t, &later, &p });
+        const t1 = Io.Clock.awake.now(io);
+        const r = t.generate(&j2, sink, arena.allocator());
+        th.join();
+        try std.testing.expectError(tool.Error.Cancelled, r);
+        try std.testing.expect(t1.durationTo(Io.Clock.awake.now(io)).toMilliseconds() < 2000);
+        try std.testing.expectEqual(tool.State.ready, t.state());
+    }
+
+    // Uncancelled, it runs to its end.
+    var never: std.atomic.Value(bool) = .init(false);
+    const j3: tool.Job = .{ .id = "c", .dir = dir, .request = .{ .speech = .{ .input = "hi" } }, .cancelled = &never };
+    _ = try t.generate(&j3, sink, arena.allocator());
+}

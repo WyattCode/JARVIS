@@ -60,6 +60,7 @@ pub const Notify = struct {
     ctx: *anyopaque,
     paused: *const fn (ctx: *anyopaque, model: []const u8, for_model: []const u8) void,
     resumed: *const fn (ctx: *anyopaque) void,
+    sessions: *const fn (ctx: *anyopaque) usize,
 };
 
 /// The most models one reservation unloads (a box has a handful).
@@ -287,14 +288,14 @@ pub const Scheduler = struct {
     /// Cancels a queued job at once, or ends the running one: early with the tool kept loaded when it offers that
     /// (`Tool.cancel`), else by aborting it (its worker is killed).
     pub fn cancel(s: *Scheduler, j: *jobs.Job) void {
-        j.cancel.store(true, .release);
+        j.cancel.store(true, .seq_cst);
         if (s.isRunning(j)) s.end(j, true);
     }
 
     /// Cancels a queued job, and ends a running one early only if its tool can stay loaded; otherwise the running job
     /// finishes and its result is ignored (the voice loop: never a reload).
     pub fn drop(s: *Scheduler, j: *jobs.Job) void {
-        j.cancel.store(true, .release);
+        j.cancel.store(true, .seq_cst);
         if (s.isRunning(j)) s.end(j, false);
     }
 
@@ -474,7 +475,7 @@ pub const Scheduler = struct {
 
     /// Under `gate`: a `keep_loaded` tool of a higher priority than slot `i` is down and due to load (not released, not
     /// backing off, not just found not to fit). Kept tools come back highest priority first across lanes, so a lower
-    /// one never takes the room a higher one is about to need (Spark-01: the image model loaded before chat at a restart,
+    /// one never takes the room a higher one is about to need (DGX-01: the image model loaded before chat at a restart,
     /// and chat then unloaded Drama 3 and Whisper to fit).
     fn higherKeptDue(s: *Scheduler, i: usize) bool {
         const p = s.slots[i].tool.config().priority;
@@ -489,7 +490,7 @@ pub const Scheduler = struct {
     }
 
     /// The working bytes of the loaded `keep_loaded` tools of a higher priority than slot `i`: a kept tool comes back only
-    /// with that much to spare, or their next job unloads it again (Spark-01: every voice turn's transcription evicted the
+    /// with that much to spare, or their next job unloads it again (DGX-01: every voice turn's transcription evicted the
     /// kept image model, which reloaded as soon as the turn ended).
     fn keptHeadroom(s: *Scheduler, i: usize) u64 {
         const p = s.slots[i].tool.config().priority;
@@ -576,7 +577,7 @@ pub const Scheduler = struct {
                 if (!s.admit(c.tool, n.resident, null)) {
                     s.gate.unlock(s.io);
                     c.failed = true;
-                    c.message = "insufficient memory to load this tool";
+                    c.message = if (s.guardsCall(slot.tool.config())) "insufficient memory without unloading protected voice models; this tool was not loaded" else "insufficient memory to load this tool";
                     return;
                 }
                 s.reserve(slot, n.resident);
@@ -699,8 +700,11 @@ pub const Scheduler = struct {
         const extra = n.working + if (cold) n.resident else 0;
         if (!s.admit(j.tool, extra, null)) {
             s.gate.unlock(s.io);
-            var buf: [160]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "insufficient memory: this request needs {d} MiB more than is free within the budget", .{extra >> 20}) catch "insufficient memory";
+            var buf: [256]u8 = undefined;
+            const msg = if (s.guardsCall(slot.tool.config()))
+                "insufficient memory without unloading protected voice models; the job was not started so voice remains available"
+            else
+                std.fmt.bufPrint(&buf, "insufficient memory: this request needs {d} MiB more than is free within the budget", .{extra >> 20}) catch "insufficient memory";
             return s.finish(j, .failed, 503, "insufficient_memory", msg, null);
         }
         s.reserve(slot, extra);
@@ -718,7 +722,7 @@ pub const Scheduler = struct {
         }
         var arena: std.heap.ArenaAllocator = .init(s.gpa);
         defer arena.deinit();
-        const job: tool_mod.Job = .{ .id = j.id, .dir = j.dir, .request = j.request };
+        const job: tool_mod.Job = .{ .id = j.id, .dir = j.dir, .request = j.request, .cancelled = &j.cancel };
         var pctx: ProgressCtx = .{ .s = s, .j = j };
         const speaking = j.request == .speech;
         if (speaking) s.speech.enter(s.io);
@@ -747,10 +751,13 @@ pub const Scheduler = struct {
     /// than it are victims (a `keep_loaded` tool coming back), and nothing is unloaded unless unloading all of them
     /// would make room: a reload that cannot happen costs no one their model.
     fn admit(s: *Scheduler, target: usize, extra: u64, below: ?i32) bool {
-        if (below) |p| {
+        const want = s.slots[target].tool.config();
+        const call = s.guardsCall(want);
+        if (below != null or call) {
             var freeable: u64 = 0;
             for (s.slots, 0..) |slot, i| {
-                if (i != target and !slot.in_use and !slot.held and slot.tool.state() == .ready and slot.tool.config().priority < p) freeable += slot.resident;
+                if (i != target and !slot.in_use and slot.tool.state() == .ready and (below == null or !slot.held) and
+                    mayEvict(want, slot.tool.config(), below, call)) freeable += slot.resident;
             }
             if (!s.fits(extra -| freeable)) return false;
         }
@@ -759,7 +766,8 @@ pub const Scheduler = struct {
             var victim: ?*Slot = null;
             for (s.slots, 0..) |*slot, i| {
                 if (i == target or slot.in_use or slot.tool.state() != .ready) continue;
-                if (below) |p| if (slot.tool.config().priority >= p or slot.held) continue; // a reservation's target waits for its job
+                if (below != null and slot.held) continue;
+                if (!mayEvict(want, slot.tool.config(), below, call)) continue;
                 if (victim == null or evictsBefore(slot, victim.?)) victim = slot;
             }
             const v = victim orelse return false;
@@ -775,6 +783,23 @@ pub const Scheduler = struct {
             });
             s.unloadSlot(v);
         }
+    }
+
+    fn guardsCall(s: *const Scheduler, target: *const config.ToolConfig) bool {
+        if (voiceLoop(target.kind)) return false;
+        if (s.cfg.protect_voice_models) return true;
+        const n = s.notify orelse return false;
+        return n.sessions(n.ctx) > 0;
+    }
+
+    fn voiceLoop(kind: @import("../tool/request.zig").Kind) bool {
+        return kind == .chat or kind == .speech or kind == .transcription;
+    }
+
+    fn mayEvict(target: *const config.ToolConfig, victim: *const config.ToolConfig, below: ?i32, call: bool) bool {
+        if (below) |p| if (victim.priority >= p) return false;
+        if (call and voiceLoop(victim.kind) and victim.priority > target.priority) return false;
+        return true;
     }
 
     fn evictsBefore(a: *const Slot, b: *const Slot) bool {
@@ -799,7 +824,7 @@ pub const Scheduler = struct {
         }
         const avail = memory.available() orelse 0;
         // A load in progress already holds part of what it was admitted for, and MemAvailable shows that part: only the
-        // rest is still to come. Counting all of it again evicted ready models (Spark-01: a 2 GiB transcription unloaded
+        // rest is still to come. Counting all of it again evicted ready models (DGX-01: a 2 GiB transcription unloaded
         // Drama 3 with 36 GiB free while the image model reloaded).
         const due = pending -| (first_avail -| avail);
         if (avail < s.cfg.reserve_bytes or avail - s.cfg.reserve_bytes < extra +| due) return false;
@@ -904,4 +929,25 @@ pub fn nowNs(io: Io) i96 {
 
 pub fn nowUnix(io: Io) i64 {
     return @intCast(@divTrunc(Io.Clock.real.now(io).toNanoseconds(), std.time.ns_per_s));
+}
+
+test "victims during a call: a request outside the voice loop never takes a voice-loop model of a higher priority" {
+    const T = config.ToolConfig;
+    const image: T = .{ .id = "image", .kind = .image, .priority = 10, .keep_loaded = true };
+    const video: T = .{ .id = "video", .kind = .video, .priority = 0 };
+    const tts: T = .{ .id = "tts", .kind = .speech, .priority = 95, .keep_loaded = true };
+    const stt: T = .{ .id = "stt", .kind = .transcription, .priority = 90, .keep_loaded = true };
+    const chat: T = .{ .id = "chat", .kind = .chat, .priority = 100, .keep_loaded = true };
+    const t = std.testing;
+    const may = Scheduler.mayEvict;
+    // DGX-01, 2026-10-24: the image model loading for a picture asked for in a call unloaded Whisper, then Drama 3.
+    for ([_]*const T{ &tts, &stt, &chat }) |voice| {
+        try t.expect(may(&image, voice, null, false)); // no call: priority only orders the victims
+        try t.expect(!may(&image, voice, null, true));
+        try t.expect(!may(&video, voice, null, true));
+    }
+    // What is not the voice loop's still makes room during a call: a video unloads the image model.
+    try t.expect(may(&video, &image, null, true));
+    // A voice-loop model making room for another (speech for transcription) is not guarded against itself.
+    try t.expect(may(&stt, &tts, null, false));
 }

@@ -100,3 +100,49 @@ To turn it on: pair what you use first, then `PAIRING_REQUIRED=1 deploy/jarvis/i
   and `tools/spark/jarvis/model_manager_check.py` send `$LOCALROUTER_TOKEN` when it is set:
   `LOCALROUTER_TOKEN=$(deploy/jarvis/pair.sh token smoke) tools/jarvis/smoke.sh`. `tools/spark/jarvis/client_check.py`
   drives the web page in Chrome and does not set the page's API key: run it with pairing off.
+
+## Validated voice and 15-second video release (2026-11-03)
+
+The server and web sources include worker cancellation propagation, quiet media receipts,
+selected-voice warmup, and the matching `localrouter.session.ready` web handshake. The
+bridge applies server-owned voice catalog/default revisions, Simplified Chinese and current
+Shanghai date context, and prevents URLs, tool payloads and internal prompts from becoming
+spoken replies. Speech identity checks keep retries on the selected voice; they detect acoustic
+outliers and are not biometric speaker verification.
+
+The tested deployment uses remote Flash-Next chat, local Drama 3/Whisper, local 1K image
+generation and MiniMax H3 video up to 15 seconds. The generic installation profile remains
+an operator choice: this commit does not install private production configs. To reproduce the
+15-second deployment, set `max_seconds: 15` on the GPU video tool and the voice coordinator's
+video tool, and `video_limits.max_seconds: 15` on the HTTP bridge. Keep the default request at
+5 seconds, preserve voice-model protection and retain the original 5-second configuration.
+The web reads the limits from `/v1/models`.
+
+The accepted public test produced a 15.075-second H.264/AAC file at 768x448, 24 fps, with a
+clean full-file decode. That sample took about 4 minutes 14 seconds including polling and
+download. A concurrent voice reply completed, with first audio packet about 3.03 seconds after
+its text request, excluding connection/warmup. These are single-run observations; they do not
+measure physical Bluetooth playback or establish a latency guarantee.
+
+`release_templates/` preserves the audited control sources for the five-layer release chain.
+They are source templates for the existing private release layout, not a standalone installer.
+The top video layer projects restored hashes before checking older guards, retains the shared
+release lock through every child, validates inherited lock identity, rejects malformed journals,
+and permits interrupted-deployment recovery only for matching known before/after hashes.
+Restoration stops consumers before writing configuration and records progress durably.
+Keep each generated manifest, config stage, original backup and journal together in the private
+release directory; those files contain deployment-specific data and are deliberately not
+versioned here. Do not overwrite control sources for an in-progress rollback or reuse a
+manifest whose artifact hashes differ. Normal operations check for active calls/jobs;
+`--force` is an explicit emergency interruption. Start at the top video controller to preserve
+cross-layer checks. There are four targets: `five`, `voice-updates`, `qwen` and `distributed`.
+Use `--check` before executing. Production rollback was not performed during the final audit.
+
+Submission validation: Python regression files run in separate processes to avoid test-module
+name collisions; Zig 0.17.0 unit tests need `ffmpeg` on `PATH`. Browser regressions use mocked
+model/WebSocket traffic with `PLAYWRIGHT_MODULE` set to an installed Playwright package.
+`tests/voice_readiness.cjs` covers actual readiness, stale voice events, warmup failures and
+legacy rollback compatibility; `tests/release_control_test.py` covers locking and bad journals.
+Speech effects use `JARVIS_FFMPEG` or `ffmpeg` on `PATH`; the build machine's private ffmpeg
+path is not required. Operator credentials, signing keys, model weights, APKs, media samples
+and production config backups are outside this commit.

@@ -23,10 +23,23 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b'10\r\nshort');self.wfile.flush();self.close_connection=True;return
         if self.mode=='empty':
             self.wfile.write(b'0\r\n\r\n');self.wfile.flush();return
-        pcm=struct.pack('<4h',100,200,300,400)
-        self.wfile.write(f'{len(pcm):x}\r\n'.encode()+pcm+b'\r\n0\r\nx-finish-reason: length\r\n\r\n');self.wfile.flush()
+        pcm=bytes(96000) if self.mode=='silent' else struct.pack('<4h',100,200,300,400)
+        reason='length' if self.mode=='length' else 'stop'
+        self.wfile.write(f'{len(pcm):x}\r\n'.encode()+pcm+b'\r\n0\r\nx-finish-reason: '+reason.encode()+b'\r\n\r\n');self.wfile.flush()
 
 class ProxyTests(unittest.TestCase):
+    def setUp(self):
+        guard = mock.patch.object(worker, 'prepare_video_prompt', side_effect=lambda prompt: prompt)
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    def test_video_guard_failure_prevents_remote_submission(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(worker, 'prepare_video_prompt', side_effect=ValueError('guard failed')), mock.patch.object(worker, 'json_call') as remote:
+            cmd = {'dir': folder, 'request': {'video': {'prompt': 'long', 'width': 768, 'height': 448}}}
+            with self.assertRaisesRegex(ValueError, 'guard failed'):
+                worker.run_job(cmd, self.config())
+            remote.assert_not_called()
+
     @classmethod
     def setUpClass(cls):
         cls.server=ThreadingHTTPServer(('127.0.0.1',0),Handler);threading.Thread(target=cls.server.serve_forever,daemon=True).start()
@@ -38,7 +51,11 @@ class ProxyTests(unittest.TestCase):
         Handler.mode='ok'
         with tempfile.TemporaryDirectory() as folder:
             out=worker.run_job(self.command(folder),self.config());data=(Path(folder)/'speech.wav').read_bytes()
-            self.assertTrue(out['ok']);self.assertEqual(out['finish_reason'],'length');self.assertEqual(data[:4],b'RIFF');self.assertEqual(len(data),52);self.assertEqual(struct.unpack('<I',data[40:44])[0],8)
+            self.assertTrue(out['ok']);self.assertEqual(out['finish_reason'],'stop');self.assertEqual(data[:4],b'RIFF');self.assertEqual(len(data),52);self.assertEqual(struct.unpack('<I',data[40:44])[0],8)
+    def test_length_termination_is_not_success(self):
+        Handler.mode='length'
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(RuntimeError,'未完整结束'):worker.run_job(self.command(folder),self.config())
     def test_truncated_stream_is_not_a_success(self):
         Handler.mode='truncated'
         with tempfile.TemporaryDirectory() as folder:
@@ -61,6 +78,30 @@ class ProxyTests(unittest.TestCase):
         Handler.mode='empty'
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaises(RuntimeError):worker.run_job(self.command(folder),self.config())
+    def test_nonempty_silent_stream_is_not_a_success(self):
+        Handler.mode='silent'
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(RuntimeError,'entirely silent'):worker.run_job(self.command(folder),self.config())
+    def test_silent_stream_with_identity_lock_is_not_a_success(self):
+        import hashlib
+        Handler.mode='silent'
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);ref=root/'ref.json'
+            ref.write_text(json.dumps({'format':'drama3-voice/1','text':'test','vq_codes':[[1]]*10,'source':{'kind':'model-invented'}}))
+            catalog=root/'catalog.json';catalog.write_text(json.dumps({'format':'jarvis-voice-lock/1','voices':{'Ezra':{'low_hz':60,'high_hz':190,'reference_file':str(ref),'reference_sha256':hashlib.sha256(ref.read_bytes()).hexdigest()}}}))
+            cfg=self.config();cfg['options'].update(voice_lock_catalog=str(catalog),default_voice='Ezra')
+            with self.assertRaisesRegex(RuntimeError,'entirely silent'):worker.run_job(self.command(folder),cfg)
+    def test_nonstream_silent_wav_is_not_a_success(self):
+        from io import BytesIO
+        with tempfile.TemporaryDirectory() as folder:
+            buffer=BytesIO()
+            with wave.open(buffer,'wb') as wav:
+                wav.setparams((1,2,24000,0,'NONE','not compressed'));wav.writeframes(bytes(96000))
+            response=mock.Mock(status=200,headers={});response.body.return_value=buffer.getvalue()
+            cmd=self.command(folder);cmd['request']['speech']['stream']=False
+            with mock.patch.object(worker,'Http',return_value=response),self.assertRaisesRegex(RuntimeError,'entirely silent'):
+                worker.run_job(cmd,self.config())
+            response.close.assert_called_once()
     def test_video_body_uses_string_seconds_and_preserves_other_fields(self):
         posted=[]
         def remote(port,method,path,body=None,**kwargs):

@@ -20,8 +20,8 @@ function instructions(){
  }
  const chromeIOS=/CriOS/.test(navigator.userAgent);
  dialog.querySelector('p').textContent=isIOS()
-  ? (chromeIOS?'点击 Chrome 的分享按钮，选择“添加到主屏幕”。':'点击 Safari 的分享按钮，选择“添加到主屏幕”。')+' 如果出现“作为网页 App 打开”，请保持开启。添加后从桌面 Jarvis 图标进入。'
-  : '打开浏览器菜单，选择“安装应用”或“添加到主屏幕”，确认安装 Jarvis。添加后从桌面图标进入。';
+  ? (chromeIOS?'点击 Chrome 的分享按钮，选择“添加到主屏幕”。':'点击 Safari 的分享按钮，选择“添加到主屏幕”。')+' 如果出现“作为网页 App 打开”，请保持开启。添加后从桌面 JARVIS 图标进入。'
+  : '打开浏览器菜单，选择“安装应用”或“添加到主屏幕”，确认安装 JARVIS。添加后从桌面图标进入。';
  if(!dialog.open)dialog.showModal();
 }
 async function install(){

@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Jarvis",
-  "short_name": "Jarvis",
-  "description": "Jarvis 人工智能助手",
+  "name": "JARVIS",
+  "short_name": "JARVIS",
+  "description": "JARVIS 人工智能助手",
   "lang": "zh-CN",
   "start_url": "/voice",
   "scope": "/",

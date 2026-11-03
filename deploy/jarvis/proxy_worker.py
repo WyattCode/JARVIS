@@ -18,7 +18,12 @@ import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools/speech/drama3'))
 from drama3_worker import Http, Worker as DramaWorker, canonical_wav
-from voice_catalog import speech_body
+from voice_catalog import speech_body, effect_preset
+sys.path.append(str(Path(__file__).resolve().parent))
+from video_prompt_guard import prepare as prepare_video_prompt
+from voice_identity_guard import locked_speech, catalog as voice_lock_catalog
+from voice_output_policy import speech_input
+from speech_effects import file_audio, stream_audio
 
 GENERATING = False
 DEFER_CANCEL = False
@@ -77,19 +82,35 @@ def run_job(cmd, cfg):
     video_id = None
     try:
         if 'speech' in req:
-            v = req['speech']; body = {k: v[k] for k in ('input', 'voice', 'speed', 'preset', 'seed') if k in v and v[k] != ''}
+            v = req['speech']; selected_voice = v.get('voice') or cfg.get('options', {}).get('default_voice'); body = {k: v[k] for k in ('input', 'voice', 'speed', 'preset', 'seed') if k in v and v[k] != ''}
             body.update(model=model, stream=bool(v.get('stream')), response_format='pcm' if v.get('stream') else 'wav')
             if v.get('references'):
                 body['references'] = json.loads((directory / v['references']).read_text())
+            style = effect_preset(cfg.get('options', {}).get('voice_catalog'), selected_voice)
             body = speech_body(body, cfg.get('options', {}).get('voice_catalog'))
-            response = Http(port, 'POST', '/v1/audio/speech', json.dumps(body).encode())
+            body['input'] = speech_input(body['input'])
+            if not body['input']:
+                raise ValueError('没有可安全朗读的内容，请返回简短的最终答复')
+            lock_catalog = cfg.get('options', {}).get('voice_lock_catalog')
+            if lock_catalog and body['stream']:
+                requested = v.get('voice') or cfg.get('options', {}).get('default_voice')
+                response = locked_speech(Http, port, body, requested, lock_catalog, directory.name)
+            else:
+                # Match streaming's same-voice Chinese conditioning; do not
+                # replace caller references or alter English-only requests.
+                if lock_catalog and not body.get('references') and any('\u3400' <= c <= '\u9fff' for c in body['input']):
+                    requested = v.get('voice') or cfg.get('options', {}).get('default_voice')
+                    profile = voice_lock_catalog(str(lock_catalog))['voices'].get(requested)
+                    if profile is None:raise ValueError('selected voice has no validated identity profile: '+str(requested))
+                    body['references'] = [profile['reference']]
+                response = Http(port, 'POST', '/v1/audio/speech', json.dumps(body).encode())
             try:
                 if response.status != 200:
                     raise RuntimeError(f'speech upstream HTTP {response.status}: {response.error_message()}')
                 if body['stream']:
-                    DramaWorker._stream_to(response, str(directory / 'speech.wav'))
+                    DramaWorker._stream_to(stream_audio(response, style), str(directory / 'speech.wav'))
                 else:
-                    (directory / 'speech.wav').write_bytes(response.body())
+                    (directory / 'speech.wav').write_bytes(file_audio(response.body(), style))
                 fields = response.trailers if body['stream'] else response.headers
                 audio = directory / 'speech.wav'
                 if audio.stat().st_size <= 44:
@@ -98,8 +119,14 @@ def run_job(cmd, cfg):
                     with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as wav:
                         if canonical_wav(wav) is None:
                             raise RuntimeError('upstream returned invalid canonical mono PCM audio')
+                        # An ordinary pause is valid; an entirely zero PCM utterance is not speech.
+                        if not any(any(wav[i:i+65536]) for i in range(44,len(wav),65536)):
+                            raise RuntimeError('upstream returned entirely silent PCM audio')
                 files = ['speech.wav']
-                extra = {'finish_reason': fields.get('x-finish-reason', 'stop')}
+                finish = fields.get('x-finish-reason', 'stop')
+                if finish not in ('', 'stop'):
+                    raise RuntimeError('语音生成未完整结束（'+finish+'），已停止播放；文字回复仍可查看')
+                extra = {'finish_reason': finish or 'stop'}
             finally:
                 response.close()
         elif 'transcription' in req:
@@ -127,6 +154,7 @@ def run_job(cmd, cfg):
                 filename=f'image-{i}.png';(directory/filename).write_bytes(base64.b64decode(image['b64_json'],validate=True));files.append(filename)
         elif 'video' in req:
             v=req['video'];body={k:v[k] for k in ('prompt','negative_prompt','seconds','fps','seed','steps','guidance','audio') if k in v}
+            body['prompt'] = prepare_video_prompt(body.get('prompt', ''))
             body['seconds'] = str(v.get('seconds', 5))
             body.update(model=model,size=f"{v['width']}x{v['height']}")
             # Capture the remote ID before delivering cancellation; otherwise the remote GPU job is orphaned.

@@ -7,6 +7,7 @@ const Io = std.Io;
 const h = @import("http.zig");
 const routes = @import("routes.zig");
 const ws = @import("../voice/ws.zig");
+const respond = @import("../voice/respond.zig");
 const Session = @import("../voice/session.zig").Session;
 const Local = @import("voice_local.zig").Local;
 const pair = @import("pair.zig");
@@ -43,7 +44,12 @@ pub const Registry = struct {
     pub fn notifier(r: *Registry, io: Io, gpa: std.mem.Allocator) @import("../sched/scheduler.zig").Notify {
         r.io = io;
         r.gpa = gpa;
-        return .{ .ctx = r, .paused = paused, .resumed = resumed };
+        return .{ .ctx = r, .paused = paused, .resumed = resumed, .sessions = openSessions };
+    }
+
+    fn openSessions(ctx: *anyopaque) usize {
+        const r: *Registry = @ptrCast(@alignCast(ctx));
+        return r.count(r.io orelse return 0);
     }
 
     fn paused(ctx: *anyopaque, model: []const u8, for_model: []const u8) void {
@@ -54,6 +60,14 @@ pub const Registry = struct {
     fn resumed(ctx: *anyopaque) void {
         const r: *Registry = @ptrCast(@alignCast(ctx));
         r.broadcast("localrouter.voice.resumed", .{ .message = "voice is back" });
+        const io = r.io orelse return;
+        r.mutex.lockUncancelable(io);
+        defer r.mutex.unlock(io);
+        for (r.sessions.items) |session| {
+            session.mutex.lockUncancelable(io);
+            defer session.mutex.unlock(io);
+            respond.getReady(session);
+        }
     }
 
     fn broadcast(r: *Registry, comptime typ: []const u8, fields: anytype) void {
@@ -216,7 +230,7 @@ test "loopback peers, query values and offered subprotocols" {
     try std.testing.expect(isLoopback(try Io.net.IpAddress.parse("::1", 1)));
     try std.testing.expect(isLoopback(try Io.net.IpAddress.parse("::ffff:127.0.0.1", 1)));
     try std.testing.expect(!isLoopback(try Io.net.IpAddress.parse("100.64.1.2", 1)));
-    try std.testing.expect(!isLoopback(try Io.net.IpAddress.parse("192.168.1.100", 1)));
+    try std.testing.expect(!isLoopback(try Io.net.IpAddress.parse("192.168.1.116", 1)));
     try std.testing.expectEqualStrings("qwen", query("/v1/realtime?model=qwen&x=1", "model").?);
     try std.testing.expect(query("/v1/realtime", "model") == null);
     try std.testing.expect(offers("realtime, openai-insecure-api-key.x, openai-beta.realtime-v1", "realtime"));

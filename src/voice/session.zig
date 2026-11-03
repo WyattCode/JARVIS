@@ -114,6 +114,14 @@ pub const Session = struct {
     primer: ?std.Thread = null, // the chat prefix prime (respond.prime), joined before the next and at the end
     warmer: ?std.Thread = null, // the speech warm-up (respond.warmSpeech), joined at the end
     priming: bool = false,
+    prime_again: bool = false,
+    warming: bool = false,
+    warm_again: bool = false,
+    warm_stop: ?*Stop = null,
+    settle_voice: bool = true,
+    getting_ready: bool = false,
+    ready_from_ns: i96 = 0,
+    speech_ready: respond.SpeechReady = .off,
     speech_end_ns: i96 = 0, // the last spoken turn's quiet began (awake clock), for its response's timing
     // The turn so far, transcribed once the speaker has been quiet for voice.early_stt_ms: while they stay quiet it is the
     // whole turn, so when the wait ends the transcript is ready and only the answer is left. It is only the turn's words:
@@ -138,12 +146,12 @@ pub const Session = struct {
         s.resetDetector();
         var tmp: std.heap.ArenaAllocator = .init(gpa);
         defer tmp.deinit();
-        s.emit.send(tmp.allocator(), "session.created", .{ .session = try events.sessionObject(tmp.allocator(), s.id, &s.settings) });
+        s.emit.send(tmp.allocator(), "session.created", .{ .session = try events.sessionObject(tmp.allocator(), s.id, &s.settings), .readiness = true });
         s.worker = try std.Thread.spawn(.{}, respond.work, .{s});
         s.mutex.lockUncancelable(io);
         respond.prime(s); // the system prompt and tools, before the first turn needs them
+        respond.getReady(s);
         s.mutex.unlock(io);
-        if (s.voice.warm_speech and s.settings.audio and respond.speechCold()) s.warmer = std.Thread.spawn(.{}, respond.warmSpeech, .{s}) catch null;
         return s;
     }
 
@@ -151,6 +159,7 @@ pub const Session = struct {
     pub fn destroy(s: *Session) void {
         s.mutex.lockUncancelable(s.io);
         s.closing = true;
+        if (s.warm_stop) |st| st.set(s.io);
         if (s.resp) |r| r.stop.set(s.io);
         s.cond.broadcast(s.io);
         s.mutex.unlock(s.io);
@@ -239,12 +248,23 @@ pub const Session = struct {
         s.mutex.lockUncancelable(s.io);
         defer s.mutex.unlock(s.io);
         const vad_changed = !std.meta.eql(st.vad, s.settings.vad);
+        const voice_changed = !eql(st.voice, s.settings.voice) or !eql(st.speech_model, s.settings.speech_model) or st.audio != s.settings.audio;
         var old = s.settings_arena;
         s.settings = st;
         s.settings_arena = next;
         old.deinit();
         if (vad_changed and s.turn == null) s.resetDetector();
         s.emit.send(a, "session.updated", .{ .session = try events.sessionObject(a, s.id, &s.settings) });
+        if (s.resp == null) respond.prime(s);
+        if (voice_changed) {
+            respond.getReady(s);
+        } else {
+            if (!s.getting_ready) {
+                s.getting_ready = true;
+                s.ready_from_ns = s.clock();
+            }
+            respond.readyCheck(s);
+        }
     }
 
     fn resetDetector(s: *Session) void {

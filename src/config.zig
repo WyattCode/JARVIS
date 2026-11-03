@@ -63,9 +63,9 @@ pub const Voice = struct {
     prime_chat: bool = true, // at the start and after each response the chat server reads the conversation so far
     // (max_tokens 1, discarded), so the next turn's request finds it in its prefix cache
     warm_speech: bool = true, // the first session after a start speaks one sentence (discarded) as it connects, on its own
-    // thread: the speech model's first job after a load is slow (0.84 s to first audio on Spark-01, 0.1 s warm)
+    // thread: the speech model's first job after a load is slow (0.84 s to first audio on DGX-01, 0.1 s warm)
     greedy_transcripts: bool = true, // voice turns decode in one greedy pass (Whisper: transcripts identical to its
-    // recipe on the qualify set and the e2e prompts, measured on Spark-01, about 150 ms sooner)
+    // recipe on the qualify set and the e2e prompts, measured on DGX-01, about 150 ms sooner)
     max_history_chars: u32 = 24000, // older turns are dropped past this
     tools: bool = true, // offer generate_image and generate_video to the chat model
     manage_models: bool = false, // offer list_models, reserve_for, unload_model and load_model to the chat model, with the
@@ -88,6 +88,7 @@ pub const Config = struct {
     budget_bytes: u64 = 0, // cap on loaded + working bytes; 0: only MemAvailable - reserve
     reserve_bytes: u64 = 8 * gib, // kept free for the OS and co-resident services
     keep_outputs_s: u32 = 24 * 3600,
+    protect_voice_models: bool = false, // protect the GPU voice models even when sessions live in a separate coordinator
     max_queue: u32 = 64,
     allow_private_urls: bool = false, // URL inputs (edits, image to video) may name loopback / private / link-local hosts
     local_files: []const []const u8 = &.{}, // directories whose audio files MCP tools may read by path (`transcribe_audio` path); none by default: the API has no auth

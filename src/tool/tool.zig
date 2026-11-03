@@ -38,6 +38,7 @@ pub const Job = struct {
     id: []const u8,
     dir: []const u8,
     request: Request,
+    cancelled: ?*const std.atomic.Value(bool) = null,
 };
 
 /// Receives progress from a running generate; called on the scheduler's thread.

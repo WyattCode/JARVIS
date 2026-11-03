@@ -15,6 +15,33 @@ const Daemon = harness.Daemon;
 const mcpCall = harness.mcpCall;
 const Value = std.json.Value;
 
+test "a separate voice coordinator's models survive image admission failures without a local session" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // 16 MiB of voice models plus a 32+6 MiB image exceed the 50 MiB budget.
+    const cfg = try std.fmt.allocPrint(
+        a,
+        "{{{s},\"budget_bytes\":52428800,\"protect_voice_models\":true," ++
+            "\"voice\":{{\"prime_chat\":false,\"warm_speech\":false}},\"tools\":[" ++
+            "{{\"id\":\"mouth\",\"kind\":\"speech\",\"cmd\":[\"python3\",\"{s}\"],\"resident_bytes\":8388608,\"keep_loaded\":true,\"priority\":95}}," ++
+            "{{\"id\":\"ears\",\"kind\":\"transcription\",\"cmd\":[\"python3\",\"{s}\"],\"resident_bytes\":8388608,\"keep_loaded\":true,\"priority\":90}}," ++
+            "{{\"id\":\"img\",\"kind\":\"image\",\"engine\":\"testpattern\",\"priority\":10}}]}}",
+        .{ harness.reserve, opts.speech_worker, opts.speech_worker },
+    );
+    var d = try Daemon.start(testing.allocator, testing.io, "external-voice-guard", cfg);
+    defer d.stop();
+    for ([_][]const u8{ "mouth", "ears" }) |id| try waitState(&d, a, id, "ready", 120);
+    const denied = try d.call(a, .POST, "/v1/images/generations", "{\"prompt\":\"a fox\",\"size\":\"1024x1024\"}");
+    try testing.expectEqual(std.http.Status.service_unavailable, denied.status);
+    try testing.expect(std.mem.indexOf(u8, denied.body, "protected voice models") != null);
+    for ([_][]const u8{ "mouth", "ears" }) |id| try testing.expectEqualStrings("ready", try d.toolState(a, id));
+    // Smaller work fits beside speech and is still allowed.
+    const allowed = try d.call(a, .POST, "/v1/images/generations", "{\"prompt\":\"a fox\",\"size\":\"256x256\"}");
+    try testing.expectEqual(std.http.Status.ok, allowed.status);
+    for ([_][]const u8{ "mouth", "ears" }) |id| try testing.expectEqualStrings("ready", try d.toolState(a, id));
+}
+
 /// chat 40 MiB (priority 100), mouth 8 (60), ears 8 (50), img 40 (10): 96 MiB warm. A testpattern video at its default
 /// 1344x768 needs 32 MiB loaded and about 69.9 MiB working: 101.9 MiB.
 fn config(a: std.mem.Allocator, budget_mib: u64) ![]const u8 {

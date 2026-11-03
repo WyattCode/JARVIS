@@ -99,20 +99,20 @@ pub const Weights = struct {
         errdefer w.deinit();
         const st = &w.store;
         inline for (.{
-            .{ "cond_w", "condition_proj.weight" },                 .{ "cond_b", "condition_proj.bias" },
-            .{ "final_norm", "token_refiner.final_norm.weight" },   .{ "vp_w", "video_patch_proj.weight" },
-            .{ "vp_b", "video_patch_proj.bias" },                   .{ "ap_w", "audio_patch_proj.weight" },
-            .{ "ap_b", "audio_patch_proj.bias" },                   .{ "fl_ada_w", "final_layer.adaln_proj.linear.weight" },
-            .{ "fl_ada_b", "final_layer.adaln_proj.linear.bias" },  .{ "fl_norm", "final_layer.norm.weight" },
-            .{ "vo_w", "final_layer.video_out.weight" },            .{ "vo_b", "final_layer.video_out.bias" },
-            .{ "ao_w", "final_layer.audio_out.weight" },            .{ "ao_b", "final_layer.audio_out.bias" },
+            .{ "cond_w", "condition_proj.weight" },                .{ "cond_b", "condition_proj.bias" },
+            .{ "final_norm", "token_refiner.final_norm.weight" },  .{ "vp_w", "video_patch_proj.weight" },
+            .{ "vp_b", "video_patch_proj.bias" },                  .{ "ap_w", "audio_patch_proj.weight" },
+            .{ "ap_b", "audio_patch_proj.bias" },                  .{ "fl_ada_w", "final_layer.adaln_proj.linear.weight" },
+            .{ "fl_ada_b", "final_layer.adaln_proj.linear.bias" }, .{ "fl_norm", "final_layer.norm.weight" },
+            .{ "vo_w", "final_layer.video_out.weight" },           .{ "vo_b", "final_layer.video_out.bias" },
+            .{ "ao_w", "final_layer.audio_out.weight" },           .{ "ao_b", "final_layer.audio_out.bias" },
         }) |e| @field(w, e[0]) = try st.tensor(up, p, e[1]);
         var nb: [96]u8 = undefined;
         for (&w.refiner, 0..) |*r, i| {
             inline for (.{
-                .{ "norm1", "norm1.weight" },           .{ "qkv", "attn.qkv_proj.weight" }, .{ "q_norm", "attn.q_norm.weight" },
-                .{ "k_norm", "attn.k_norm.weight" },    .{ "out", "attn.out_proj.weight" }, .{ "norm2", "norm2.weight" },
-                .{ "fc1", "mlp.fc1.weight" },           .{ "fc2", "mlp.fc2.weight" },
+                .{ "norm1", "norm1.weight" },        .{ "qkv", "attn.qkv_proj.weight" }, .{ "q_norm", "attn.q_norm.weight" },
+                .{ "k_norm", "attn.k_norm.weight" }, .{ "out", "attn.out_proj.weight" }, .{ "norm2", "norm2.weight" },
+                .{ "fc1", "mlp.fc1.weight" },        .{ "fc2", "mlp.fc2.weight" },
             }) |e| @field(r, e[0]) = try st.tensor(up, p, try std.fmt.bufPrint(&nb, "token_refiner.blocks.{d}.{s}", .{ i, e[1] }));
         }
         for (&w.blocks, 0..) |*b, i| {
@@ -147,10 +147,32 @@ pub const Dit = struct {
     context: u64 = 0,
     ctx_rows: u32 = 0,
     // per step
-    h: u64 = 0, hn: u64 = 0, qkv: u64 = 0, heads_out: u64 = 0, att: u64 = 0, o: u64 = 0, gu: u64 = 0, act: u64 = 0,
-    q: u64 = 0, kk: u64 = 0, v: u64 = 0, qc: u64 = 0, qs: u64 = 0, ws: u64 = 0,
-    mod: u64 = 0, t_emb: u64 = 0, idx: u64 = 0, rope: u64 = 0, a_in: u64 = 0,
-    rows: u64 = 0, arows: u64 = 0, emb: u64 = 0, aemb: u64 = 0, fada: u64 = 0, vout: u64 = 0, aout: u64 = 0,
+    h: u64 = 0,
+    hn: u64 = 0,
+    qkv: u64 = 0,
+    heads_out: u64 = 0,
+    att: u64 = 0,
+    o: u64 = 0,
+    gu: u64 = 0,
+    act: u64 = 0,
+    q: u64 = 0,
+    kk: u64 = 0,
+    v: u64 = 0,
+    qc: u64 = 0,
+    qs: u64 = 0,
+    ws: u64 = 0,
+    mod: u64 = 0,
+    t_emb: u64 = 0,
+    idx: u64 = 0,
+    rope: u64 = 0,
+    a_in: u64 = 0,
+    rows: u64 = 0,
+    arows: u64 = 0,
+    emb: u64 = 0,
+    aemb: u64 = 0,
+    fada: u64 = 0,
+    vout: u64 = 0,
+    aout: u64 = 0,
     layout_key: ?[5]u32 = null,
     /// The fast schedule (`fuse`: fused gate_add + norm_mod, attention stored as rows; `graphs`: the step's launches replayed
     /// as a CUDA graph per shape and buffer set). Both default on, both off with STK_H3_REF=1 (the reference path), and a
@@ -179,15 +201,16 @@ pub const Dit = struct {
         const bf = 2;
         const qr = plan.rows(@intCast(r), ffn, plan.TB); // the widest quantized rows (K up to 14336)
         inline for (.{
-            .{ "context", @as(u64, max_l) * dim * bf },       .{ "h", r * dim * bf },              .{ "hn", r * dim * bf },
-            .{ "qkv", r * 3 * inner * bf },                   .{ "heads_out", r * inner * bf },    .{ "att", r * inner * bf },
-            .{ "o", r * dim * bf },                           .{ "gu", r * 2 * ffn * bf },         .{ "act", r * ffn * bf },
-            .{ "q", @as(u64, max_l) * inner * bf },           .{ "kk", @as(u64, max_l) * inner * bf }, .{ "v", @as(u64, max_l) * inner * bf },
-            .{ "qc", qr.fp8_bytes },                          .{ "qs", qr.scales_bytes },          .{ "ws", launch.Kitchen.Plan.of(heads, max_s).total },
-            .{ "mod", 2 * ada_n * 4 },                        .{ "mod2", 2 * ada_n * 4 },       .{ "t_emb", 2 * t_dim * 4 },         .{ "idx", r * 4 },
-            .{ "rope", r * 48 * 4 * bf },                     .{ "a_in", r * bf },                 .{ "rows", r * 96 * 4 },
-            .{ "arows", r * 32 * 4 },                         .{ "emb", r * dim * 4 },             .{ "aemb", r * dim * 4 },
-            .{ "fada", 2 * 2 * dim * 4 },                     .{ "vout", r * 96 * 4 },             .{ "aout", r * 32 * 4 },
+            .{ "context", @as(u64, max_l) * dim * bf }, .{ "h", r * dim * bf },                  .{ "hn", r * dim * bf },
+            .{ "qkv", r * 3 * inner * bf },             .{ "heads_out", r * inner * bf },        .{ "att", r * inner * bf },
+            .{ "o", r * dim * bf },                     .{ "gu", r * 2 * ffn * bf },             .{ "act", r * ffn * bf },
+            .{ "q", @as(u64, max_l) * inner * bf },     .{ "kk", @as(u64, max_l) * inner * bf }, .{ "v", @as(u64, max_l) * inner * bf },
+            .{ "qc", qr.fp8_bytes },                    .{ "qs", qr.scales_bytes },              .{ "ws", launch.Kitchen.Plan.of(heads, max_s).total },
+            .{ "mod", 2 * ada_n * 4 },                  .{ "mod2", 2 * ada_n * 4 },              .{ "t_emb", 2 * t_dim * 4 },
+            .{ "idx", r * 4 },                          .{ "rope", r * 48 * 4 * bf },            .{ "a_in", audioInputBytes(r) },
+            .{ "rows", r * 96 * 4 },                    .{ "arows", r * 32 * 4 },                .{ "emb", r * dim * 4 },
+            .{ "aemb", r * dim * 4 },                   .{ "fada", 2 * 2 * dim * 4 },            .{ "vout", r * 96 * 4 },
+            .{ "aout", r * 32 * 4 },
         }) |e| @field(x, e[0]) = try x.alloc(e[1]);
         return x;
     }
@@ -598,4 +621,17 @@ test "the step's code type-checks (no GPU here: the h3-replay and h3-step-bench 
     _ = &Dit.prepare;
     _ = &Dit.init;
     _ = &Dit.launches;
+}
+
+// Audio has 32 latent channels per sequence row; audio rows are bounded by max_s.
+fn audioInputBytes(max_s: u64) u64 {
+    return max_s * 32 * @sizeOf(u16);
+}
+
+test "audio carry buffer covers full stereo latent at 10 and 15 seconds" {
+    const testing = std.testing;
+    // 768x448 at 10/15 seconds and 256x256 at 5 seconds exceeded the old allocation.
+    for ([_][2]u64{ .{ 25514, 25920 }, .{ 37670, 38592 }, .{ 3294, 13248 } }) |shape| {
+        try testing.expect(audioInputBytes(shape[0]) >= shape[1] * @sizeOf(u16));
+    }
 }

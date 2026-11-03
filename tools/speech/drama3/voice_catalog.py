@@ -68,6 +68,8 @@ def speech_body(body, catalog_path):
 def describe_voices(model, catalog_path):
     if not catalog_path:
         return model
+    if 'voices' not in model:
+        return model  # Status inventories are not voice-capability catalogs.
     catalog = load_catalog(str(catalog_path))
     if model.get('id') != catalog['model'] or model.get('kind') != 'speech':
         return model
@@ -84,7 +86,18 @@ def describe_voices(model, catalog_path):
     order = {ident: index for index, ident in enumerate(catalog.get('display_order', []))}
     if order:
         voices.sort(key=lambda voice: order.get(voice if isinstance(voice, str) else voice.get('id'), len(order)))
-    return dict(model, voices=voices)
+    default = catalog.get('default_voice', model.get('default_voice', ''))
+    accepted = {v if isinstance(v, str) else v.get('id') for v in voices}
+    if default and default not in accepted:
+        raise ValueError('configured default voice is not available')
+    revisions = {}
+    for field in ('voice_catalog_revision', 'voice_default_revision'):
+        revision = catalog.get(field)
+        if revision is not None:
+            if type(revision) is not int or not 0 < revision <= 9007199254740991:
+                raise ValueError('invalid voice configuration revision')
+            revisions[field] = revision
+    return dict(model, voices=voices, default_voice=default, **revisions)
 
 
 def preview_audio(catalog_path, voice_id):
@@ -93,3 +106,13 @@ def preview_audio(catalog_path, voice_id):
     catalog = load_catalog(str(catalog_path))
     voice = next((v for v in catalog['voices'] if v['id'] == voice_id), None) or catalog.get('previews', {}).get(voice_id)
     return voice.get('preview_audio') if voice else None
+
+
+def effect_preset(catalog_path, voice_id):
+    if not catalog_path:
+        return None
+    voice = next((v for v in load_catalog(str(catalog_path))['voices'] if v['id'] == voice_id), None)
+    preset = voice.get('effect_preset') if voice else None
+    if preset not in (None, 'sterling', 'nexus', 'titan'):
+        raise ValueError('invalid fixed voice effect preset')
+    return preset

@@ -2,9 +2,10 @@
 import sys,json,subprocess,threading,time,socket,unittest
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from public_access_test import PublicTests,Backend,ThreadingHTTPServer,HOST,ORIGIN
+import public_access_test as public_tests
+from public_access_test import Backend,ThreadingHTTPServer,HOST,ORIGIN
 
-class VoiceExperiment(PublicTests):
+class VoiceExperiment(public_tests.PublicTests):
  @classmethod
  def setUpClass(cls):
   super().setUpClass()
