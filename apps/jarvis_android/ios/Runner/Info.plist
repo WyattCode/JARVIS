@@ -24,11 +24,11 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>$(FLUTTER_BUILD_NAME)</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleVersion</key>
-	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
@@ -37,6 +37,8 @@
 	<string>贾维斯需要把生成的图片和视频保存到你的相册。</string>
 	<key>NSCameraUsageDescription</key>
 	<string>贾维斯需要使用相机来拍摄照片并发给模型。</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>贾维斯用 Face ID 来确认是你本人，再用保存的密码登录。</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>贾维斯需要使用麦克风来进行语音对话。</string>
 	<key>UIApplicationSceneManifest</key>
@@ -51,11 +53,9 @@
 					<key>UISceneClassName</key>
 					<string>UIWindowScene</string>
 					<key>UISceneConfigurationName</key>
-					<string>flutter</string>
+					<string>Default Configuration</string>
 					<key>UISceneDelegateClassName</key>
 					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
-					<key>UISceneStoryboardFile</key>
-					<string>Main</string>
 				</dict>
 			</array>
 		</dict>
@@ -68,11 +68,10 @@
 	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
-	<key>UIMainStoryboardFile</key>
-	<string>Main</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>

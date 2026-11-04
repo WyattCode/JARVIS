@@ -49,10 +49,3 @@ app.*.map.json
 
 # Brand resources are source assets, even when the parent repo ignores screenshots.
 !android/app/src/main/res/**/*.png
-
-# The repository-wide *.png rule would drop images the apps need to build.
-!assets/*.png
-!ios/Runner/Assets.xcassets/**/*.png
-
-# Third-party reference photos stay private.
-design/icon/arc-reactor/references/

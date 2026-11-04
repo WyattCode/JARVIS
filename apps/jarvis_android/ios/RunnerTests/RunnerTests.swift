@@ -1,4 +1,4 @@
-import Flutter
+
 import ImageIO
 import UIKit
 import UniformTypeIdentifiers
@@ -6,7 +6,7 @@ import XCTest
 
 @testable import Runner
 
-/// Native checks for `FilesBridge.normalizeImage`: same limits as Android (long edge <= 3072px, <= 3MB JPEG, white flatten).
+/// Native checks for `FilesService.normalizeImage`: same limits as Android (long edge <= 3072px, <= 3MB JPEG, white flatten).
 class RunnerTests: XCTestCase {
   private func makeImage(
     width: Int, height: Int, type: UTType, alpha: Bool = false, orientation: Int? = nil
@@ -44,7 +44,7 @@ class RunnerTests: XCTestCase {
 
   func testLargeHeicIsScaledToLongEdge3072AndStaysUnder3MB() throws {
     let heic = try makeImage(width: 3000, height: 4000, type: .heic)
-    let out = try FilesBridge.normalizeImage(heic)
+    let out = try FilesService.normalizeImage(heic)
     let d = try decode(out)
     XCTAssertEqual(max(d.w, d.h), 3072)
     XCTAssertEqual(Double(d.w) / Double(d.h), 0.75, accuracy: 0.01, "aspect ratio is preserved")
@@ -52,7 +52,7 @@ class RunnerTests: XCTestCase {
   }
 
   func testSmallImageIsNotUpscaled() throws {
-    let out = try FilesBridge.normalizeImage(try makeImage(width: 640, height: 480, type: .jpeg))
+    let out = try FilesService.normalizeImage(try makeImage(width: 640, height: 480, type: .jpeg))
     let d = try decode(out)
     XCTAssertEqual(d.w, 640)
     XCTAssertEqual(d.h, 480)
@@ -60,7 +60,7 @@ class RunnerTests: XCTestCase {
 
   func testExifOrientationIsApplied() throws {
     // Orientation 6 = rotate 90 degrees CW for display, so a 400x200 file shows as 200x400.
-    let out = try FilesBridge.normalizeImage(
+    let out = try FilesService.normalizeImage(
       try makeImage(width: 400, height: 200, type: .jpeg, orientation: 6))
     let d = try decode(out)
     XCTAssertEqual(d.w, 200)
@@ -68,7 +68,7 @@ class RunnerTests: XCTestCase {
   }
 
   func testTransparentPixelsAreFlattenedOntoWhite() throws {
-    let out = try FilesBridge.normalizeImage(
+    let out = try FilesService.normalizeImage(
       try makeImage(width: 200, height: 200, type: .png, alpha: true))
     let d = try decode(out)
     let ctx = try XCTUnwrap(
@@ -82,6 +82,6 @@ class RunnerTests: XCTestCase {
   }
 
   func testNonImageDataIsRejected() {
-    XCTAssertThrowsError(try FilesBridge.normalizeImage(Data("not an image".utf8)))
+    XCTAssertThrowsError(try FilesService.normalizeImage(Data("not an image".utf8)))
   }
 }

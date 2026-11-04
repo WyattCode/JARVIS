@@ -1,5 +1,4 @@
 import AVFoundation
-import Flutter
 
 /// Tiny RMS envelopes indexed by submitted frames, never by arrival time (port of PcmLevelTimeline.kt).
 struct PcmLevelTimeline {
@@ -46,29 +45,22 @@ struct PcmLevelTimeline {
   }
 }
 
-/// Delivers captured mono PCM16 (24 kHz) to Dart.
-final class AudioInputStream: NSObject, FlutterStreamHandler {
-  var sink: FlutterEventSink?
-  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
-    sink = events
-    return nil
-  }
-  func onCancel(withArguments arguments: Any?) -> FlutterError? {
-    sink = nil
-    return nil
-  }
-}
-
-/// iOS counterpart of PcmPlayer.kt plus the audio-focus handling in MainActivity.kt.
-///
-/// Contract with lib/voice/audio_device.dart: mono PCM16 in, every call carries an epoch so audio queued
-/// before clear()/stop() can never play afterwards. On iOS the microphone is captured here too, on the playback engine; this class owns the
-/// shared AVAudioSession (playAndRecord + voiceChat, which is what gives the system echo cancellation on input).
-final class AudioBridge: NSObject, FlutterStreamHandler {
+/// The call's audio engine: mono PCM16 in, every call carries an epoch so audio queued before clear()/stop() can never play
+/// afterwards. The microphone is captured here too, on the playback engine; this class owns the shared AVAudioSession
+/// (playAndRecord + voiceChat, which is what gives the system echo cancellation on input). `EngineAudioDevice` is its owner.
+// All of its state is touched on `queue` (or under a lock), whichever thread calls in.
+final class AudioBridge: NSObject, @unchecked Sendable {
   private enum AudioError: Error { case badRate, format, noInput }
 
+  static func isNoInput(_ error: Error) -> Bool {
+    if case AudioError.noInput = error { return true }
+    return false
+  }
+
   private let queue = DispatchQueue(label: "ai.jarvis.app.audio")
-  private var sink: FlutterEventSink?
+  /// The events and the captured audio go to the owner (`EngineAudioDevice`), on the main queue.
+  var onEvent: (([String: Any]) -> Void)?
+  var onInput: ((Data) -> Void)?
   private var engine: AVAudioEngine?
   private var player: AVAudioPlayerNode?
   private var format: AVAudioFormat?
@@ -79,7 +71,6 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
   private var timer: DispatchSourceTimer?
   private var observers: [NSObjectProtocol] = []
   /// Microphone capture shares the playback engine, so the system echo canceller hears exactly what we play.
-  private let inputStream = AudioInputStream()
   private var captureEcho: Bool?
   private let captureLock = NSLock()
   private var captureConverter: AVAudioConverter?
@@ -94,81 +85,47 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
   private let maxBufferedFrames: Int64 = 24000 * 20
   private let chunkBytes = 4800
 
-  func register(with messenger: FlutterBinaryMessenger) {
-    // Remove the temporary diagnostics file written by earlier test builds.
-    if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-      try? FileManager.default.removeItem(at: docs.appendingPathComponent("voice-diag.txt"))
+  // MARK: Entry points
+
+  /// Builds the session and the engine (with the microphone on the same engine when `echoCancel` is given).
+  func configureAsync(rate: Int, epoch: Int, echoCancel: Bool?, keepCapture: Bool = false) async throws {
+    try await onQueue { [self] in
+      try configure(rate: rate, epoch: epoch, capture: keepCapture ? captureEcho : echoCancel)
     }
-    FlutterEventChannel(name: "ai.jarvis.app/audio-events", binaryMessenger: messenger).setStreamHandler(self)
-    FlutterEventChannel(name: "ai.jarvis.app/audio-input", binaryMessenger: messenger).setStreamHandler(inputStream)
-    FlutterMethodChannel(name: "ai.jarvis.app/audio", binaryMessenger: messenger)
-      .setMethodCallHandler { [weak self] call, result in self?.handle(call, result) }
   }
 
-  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
-    sink = events
-    return nil
+  func startCaptureAsync(echo: Bool, epoch: Int) async throws {
+    try await onQueue { [self] in try startCapture(echo: echo, epoch: epoch) }
   }
 
-  func onCancel(withArguments arguments: Any?) -> FlutterError? {
-    sink = nil
-    return nil
+  func clearAsync(epoch: Int) async {
+    try? await onQueue { [self] in
+      self.epoch = epoch
+      dropQueued()
+    }
   }
 
-  // MARK: Method channel
+  func stopAsync() async { try? await onQueue { [self] in endAudio() } }
 
-  private func handle(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
-    let args = call.arguments as? [String: Any] ?? [:]
-    let failure = FlutterError(code: "audio_failed", message: "音频设备未能启动或已被占用", details: nil)
-    switch call.method {
-    case "start", "configureOutput":
-      guard let rate = args["rate"] as? Int, let epoch = args["epoch"] as? Int else { return result(failure) }
-      // `start` carries `echoCancel` when the microphone should be captured on the same engine.
-      let isStart = call.method == "start"
-      queue.async {
-        // `configureOutput` (voice preview, rate reset) must rebuild the engine with whatever capture the call already has.
-        let capture = isStart ? args["echoCancel"] as? Bool : self.captureEcho
-        do {
-          try self.configure(rate: rate, epoch: epoch, capture: capture)
-          self.reply(result, nil)
-        } catch {
-          self.reply(result, Self.flutterError(error) ?? failure)
-        }
-      }
-    case "startCapture":
-      guard let echo = args["echoCancel"] as? Bool, let epoch = args["epoch"] as? Int else { return result(failure) }
+  /// Hands PCM to the player; waits while the player has too much buffered (backpressure) and gives up silently when the
+  /// epoch changed meanwhile.
+  func feedAsync(epoch: Int, data: Data) async throws {
+    let ok: Bool = await withCheckedContinuation { continuation in
+      queue.async { self.feed(epoch: epoch, data: data, offset: 0) { continuation.resume(returning: $0) } }
+    }
+    if !ok { throw NSError(domain: "audio", code: 1) }
+  }
+
+  private func onQueue(_ work: @escaping () throws -> Void) async throws {
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
       queue.async {
         do {
-          try self.startCapture(echo: echo, epoch: epoch)
-          self.reply(result, nil)
+          try work()
+          continuation.resume()
         } catch {
-          self.reply(result, Self.flutterError(error) ?? failure)
+          continuation.resume(throwing: error)
         }
       }
-    case "feed":
-      guard let epoch = args["epoch"] as? Int, let bytes = args["bytes"] as? FlutterStandardTypedData else {
-        return result(failure)
-      }
-      queue.async { self.feed(epoch: epoch, data: bytes.data, offset: 0, result: result) }
-    case "clear":
-      guard let epoch = args["epoch"] as? Int else { return result(failure) }
-      queue.async {
-        self.epoch = epoch
-        self.dropQueued()
-        self.reply(result, nil)
-      }
-    case "inputAvailable":
-      queue.async { self.reply(result, Self.inputUsable()) }
-    case "inputError":
-      emit(["type": "input_error"])
-      result(nil)
-    case "stop":
-      queue.async {
-        self.endAudio()
-        self.reply(result, nil)
-      }
-    default:
-      result(FlutterMethodNotImplemented)
     }
   }
 
@@ -188,17 +145,8 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
     #endif
   }
 
-  private static func flutterError(_ error: Error) -> FlutterError? {
-    guard case AudioError.noInput = error else { return nil }
-    return FlutterError(code: "no_input", message: "未检测到可用的麦克风，请检查音频输入后再开启语音", details: nil)
-  }
-
-  private func reply(_ result: @escaping FlutterResult, _ value: Any?) {
-    DispatchQueue.main.async { result(value) }
-  }
-
   private func emit(_ event: [String: Any]) {
-    DispatchQueue.main.async { self.sink?(event) }
+    DispatchQueue.main.async { self.onEvent?(event) }
   }
 
   // MARK: Session and engine
@@ -206,13 +154,21 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
   private func activateSession(capturing: Bool) throws {
     let session = AVAudioSession.sharedInstance()
     if capturing {
-      try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+      try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
     } else {
       // A voice try-out only plays. In the call's voice-chat mode, without the echo-cancelling input that goes with it,
       // the same clip came out quieter than in the call; plain playback is at the normal media volume.
       try session.setCategory(.playback, mode: .default, options: [])
     }
-    try session.setActive(true)
+    do {
+      try session.setActive(true)
+    } catch {
+      // Another call or app holds the audio (a phone call, say): that is what the person is told, not "check the microphone".
+      let busy = (error as NSError).code == AVAudioSession.ErrorCode.cannotInterruptOthers.rawValue
+        || (error as NSError).code == AVAudioSession.ErrorCode.isBusy.rawValue
+      if busy { throw JarvisException("音频正被其他通话或应用占用，请结束后重试") }
+      throw error
+    }
     installObservers()
   }
 
@@ -235,7 +191,7 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
       guard tap else { throw AudioError.noInput }
     }
     try engine.start()
-    player.play()
+    if !held { player.play() }
     self.engine = engine
     self.player = player
     self.format = format
@@ -307,7 +263,7 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
       do {
         if !engine.isRunning { try engine.start() }
         // AVAudioPlayerNode.play() on a stopped engine raises an exception that ends the app.
-        if engine.isRunning { player.play() }
+        if engine.isRunning, !held { player.play() }
       } catch {
         emit(["type": "output_error"])
       }
@@ -319,9 +275,22 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
 
   /// Changes the echo-cancel setting mid-call: rebuilds the engine, so queued playback is discarded with a new epoch.
   private func startCapture(echo: Bool, epoch: Int) throws {
-    guard engine != nil else { throw AudioError.format }
-    try awaitInput()
+    // The epoch is the device's from the first: if the input is not there (or the rebuild fails), the audio that comes is still
+    // told from the old one, instead of being dropped as stale for the rest of the call.
     self.epoch = epoch
+    if engine == nil {
+      // A failed rebuild earlier left none: it is made again here (not after the call has ended: nothing then would stop it).
+      guard captureEcho != nil else { throw AudioError.format }
+      try awaitInput()
+      submitted = 0
+      levels.clear()
+      captureEcho = echo
+      watchdogAttempts = 0
+      try buildEngine()
+      publish()
+      return
+    }
+    try awaitInput()
     submitted = 0
     levels.clear()
     captureEcho = echo
@@ -370,6 +339,9 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
       self.watchdogAttempts += 1
       try? AVAudioSession.sharedInstance().setActive(true)
       self.teardownEngine()
+      // The new player starts from nothing: what was counted as queued for the old one is not there.
+      self.submitted = 0
+      self.levels.clear()
       do {
         try self.buildEngine()
       } catch {
@@ -416,16 +388,19 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
     }
     guard failure == nil, out.frameLength > 0, let pcm = out.int16ChannelData else { return }
     let bytes = Data(bytes: pcm[0], count: Int(out.frameLength) * 2)
-    DispatchQueue.main.async { self.inputStream.sink?(FlutterStandardTypedData(bytes: bytes)) }
+    DispatchQueue.main.async {
+      self.onInput?(bytes)
+    }
   }
 
   // MARK: Playback
 
-  private func feed(epoch: Int, data: Data, offset: Int, result: @escaping FlutterResult) {
+  /// `result` says whether the audio was taken (false: it could not be played).
+  private func feed(epoch: Int, data: Data, offset: Int, result: @escaping (Bool) -> Void) {
     guard data.count % 2 == 0 else {
-      return reply(result, FlutterError(code: "audio_failed", message: "音频输出失败", details: nil))
+      return result(false)
     }
-    guard !data.isEmpty, epoch == self.epoch, let player, let format else { return reply(result, nil) }
+    guard !data.isEmpty, epoch == self.epoch, let player, let format else { return result(true) }
     var at = offset
     while at < data.count {
       if bufferedFrames() > maxBufferedFrames {
@@ -442,7 +417,7 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
       guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)),
         let channel = buffer.floatChannelData?[0]
       else {
-        return reply(result, FlutterError(code: "audio_failed", message: "音频输出失败", details: nil))
+        return result(false)
       }
       buffer.frameLength = AVAudioFrameCount(samples.count)
       for (i, sample) in samples.enumerated() { channel[i] = Float(sample) / 32768.0 }
@@ -456,7 +431,7 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
       at = end
     }
     publish()
-    reply(result, nil)
+    result(true)
   }
 
   private func playedFrames() -> Int64 {
@@ -542,6 +517,18 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
     }
   }
 
+  /// Holds playback where it is, or lets it go on; what is queued stays queued.
+  func setPaused(_ paused: Bool) {
+    queue.async { [self] in
+      held = paused
+      guard let player, let engine, engine.isRunning else { return }
+      if paused { player.pause() } else { player.play() }
+    }
+  }
+
+  /// Playback is being held (a tap on the call page): a restart of the engine must not start it again.
+  private var held = false
+
   /// Route changes (Bluetooth, headphones) restart the engine and discard its queued buffers.
   private func recoverEngine() {
     guard let engine, let player else { return }
@@ -559,7 +546,7 @@ final class AudioBridge: NSObject, FlutterStreamHandler {
         }
       }
       if !engine.isRunning { try engine.start() }
-      player.play()
+      if !held { player.play() }
     } catch {
       emit(["type": "output_error"])
     }

@@ -1,43 +1,36 @@
-# JARVIS app (Flutter)
+# JARVIS app (iOS, Swift)
 
 The phone app for the self-hosted JARVIS voice assistant: chat, voice calls, image and video generation, with a
-Chinese UI. It is written in Flutter and is built mainly for iOS, including the foldable iPhone Duo (see
-[IOS.md](IOS.md)); the Android build is kept working but is not the focus.
+Chinese UI. It is a native Swift app (UIKit + SwiftUI, Liquid Glass) built for the foldable iPhone Duo and the iPhone
+Pro Max (see [IOS.md](IOS.md)).
 
 It talks to a JARVIS server that you run yourself (see the repository's top-level README and `deploy/jarvis/`). The
-app has no built-in server: set the address when you build or run it.
+app has no built-in server: set the address in `ios/Runner/NativeApp.swift` (`NativeApp.server`, a placeholder by default).
+The sign-in is the account of that server.
 
-## Run
+## Build and run
 
 ```
-cd apps/jarvis_android
-flutter pub get
-flutter run --dart-define=JARVIS_SERVER=https://your-server.example.com
+cd apps/jarvis_android/ios
+xcodebuild -project Runner.xcodeproj -scheme Runner -sdk iphonesimulator -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' build
 ```
-
-`JARVIS_SERVER` is the server's address (default `https://jarvis.example.com`, a placeholder). The sign-in is the
-account of that server.
-
-## Build for iOS
 
 See [IOS.md](IOS.md): signing with your own team, the bundle id to change, TestFlight upload.
 
 ## Tests
 
 ```
-flutter analyze
-flutter test
+cd apps/jarvis_android/ios/JarvisCore && swift test      # the logic layer: sessions, streaming, persistence, backup, voice
+ios/tools/smoke.sh                                       # simulator screenshots of every page, compared with a baseline
 ```
-
-The suite covers layout at several screen sizes and text scales, the iPhone Duo poses, motion (frame by frame),
-state and persistence, and the voice session.
 
 ## Notes
 
-- [IOS.md](IOS.md): iOS and iPhone Duo specifics, build and release steps.
+- [IOS.md](IOS.md): build and release steps, debug flags.
 - [DESIGN.md](DESIGN.md), [FOLDABLE.md](FOLDABLE.md): design notes and foldable-screen rules.
-- Optional build-time values: `JARVIS_SERVER` (server address), and the privacy-policy and support-contact values in
-  `lib/model/app_info.dart` (empty by default: the rows that depend on them stay hidden).
+- The privacy-policy and support-contact values are in `ios/JarvisCore/Sources/JarvisCore/AppInfo.swift` (empty by default:
+  the rows that depend on them stay hidden).
 - No account, token or certificate is stored in the project.
 
 ## License
