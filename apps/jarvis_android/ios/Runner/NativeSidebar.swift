@@ -140,10 +140,13 @@ final class SidebarViewController: UIHostingController<SidebarView> {
     applyBar()
   }
 
-  /// The bar exists only for the strip; otherwise the list's own header and the drawer's gestures do its work.
-  private func applyBar() {
+  /// The bar exists only for the strip; otherwise the list's own header and the drawer's gestures do its work. `windowSize` is the
+  /// window's size-to-be while it turns (the root says it before the turn, so the bar is not changed in the turn's first layout).
+  private func applyBar(windowSize: CGSize? = nil) {
     let vertical = hasVerticalBar(traitCollection)
-    let upright = !vertical && isInnerDisplayUpright(view.window?.bounds.size ?? view.bounds.size)
+    // Held upright (the foldable's inner display, or a straight phone) the list is the whole window and the bar is along the top.
+    let size = windowSize ?? view.window?.bounds.size
+    let upright = !vertical && (size.map { isInnerDisplayUpright($0) } ?? false || isStraightPortrait(view, size: size))
     let strip = vertical || upright
     if navigationController?.isNavigationBarHidden != !strip { navigationController?.setNavigationBarHidden(!strip, animated: false) }
     // Held upright the top bar has room for the settings too (beside a vertical strip the drawer has the three it always had).
@@ -153,6 +156,8 @@ final class SidebarViewController: UIHostingController<SidebarView> {
       navigationItem.rightBarButtonItems = items
     }
   }
+
+  func prepareBar(windowSize: CGSize) { if isViewLoaded { applyBar(windowSize: windowSize) } }
 
   private var barUpright = false
   private lazy var settingsItem: UIBarButtonItem = {

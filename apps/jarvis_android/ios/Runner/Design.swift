@@ -111,6 +111,33 @@ func isFoldablePhone(_ view: UIView) -> Bool {
 }
 
 
+/// The model this runs on (the simulator reports the one it stands for); read once.
+private let modelIdentifier: String = {
+  if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] { return simulated }
+  var info = utsname()
+  uname(&info)
+  return withUnsafePointer(to: &info.machine) { $0.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) } }
+}()
+
+/// An iPhone that does not fold (the Pro Max sizes): not the Duo's inner or outer display, whatever the traits say at that moment.
+/// The Duo is known by its model too (the system's traits are not always there before the first layout).
+@MainActor
+func isStraightPhone(_ view: UIView) -> Bool {
+  if modelIdentifier == "iPhone19,4" { return false }
+  if hasVerticalBar(view.traitCollection) || isFoldablePhone(view) { return false }
+  return !isInnerDisplayUpright(view.window?.bounds.size ?? view.bounds.size)
+}
+
+/// A straight phone held upright: its conversation list covers the whole window, with its own buttons along the top (as the
+/// foldable's inner display held upright has). `size` is the window's (the new one, while it turns); without a window and a size
+/// it is not known, and the answer is no (the next layout asks again).
+@MainActor
+func isStraightPortrait(_ view: UIView, size: CGSize? = nil) -> Bool {
+  guard let size = size ?? view.window?.bounds.size else { return false }
+  return size.height > size.width && isStraightPhone(view)
+}
+
+
 /// The brand mark: a ring with an inner ring, a centre ring and three spokes, in line art (the original's JarvisMark).
 final class JarvisMarkView: UIView {
   override init(frame: CGRect) {
@@ -169,7 +196,9 @@ enum ChatLayout {
   /// A picture in a reply: this wide (less where there is no room), whatever the column is. It must not follow the column: the picture of
   /// the messages that stands in for them while the list beside the chat slides would then be another size than the real one.
   static let picture: CGFloat = 480
-  /// A phone's drawer: this share of the window (at most 420 pt on a wide one).
+  /// A phone's drawer: this share of the window (at most 420 pt on a wide one). A foldable (the iPhone Duo) keeps this one.
   static let drawer: CGFloat = 0.88
   static let drawerMost: CGFloat = 420
+  /// A straight phone's drawer (the Pro Max sizes): narrower.
+  static let drawerStraight: CGFloat = 0.80
 }

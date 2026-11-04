@@ -48,6 +48,7 @@ final class RootContainerViewController: UIViewController, UIGestureRecognizerDe
   private var moving = false
 
   private var sliding = false
+  private var slideToken = 0
   private let drawerFraction = ChatLayout.drawer
 
   init(store: JarvisStore) {
@@ -288,11 +289,20 @@ final class RootContainerViewController: UIViewController, UIGestureRecognizerDe
   private var dimOpen: CGFloat { sidebarWidth >= view.bounds.width - 1 ? 0 : 1 }
 
 
+  /// What kind of phone this is and how it is held, worked out once per layout pass (the drawer's width is asked for at every touch
+  /// of a drag, and the answer needs the system's fold regions).
+  private var straightPhone = false
+  private var straightPortrait = false
+  private func refreshShape(_ size: CGSize) {
+    straightPhone = isStraightPhone(view)
+    straightPortrait = straightPhone && size.height > size.width
+  }
+
   private var sidebarWidth: CGFloat {
     if wide { return dockedWidth }
-    if hasVerticalBar(traitCollection) || isInnerDisplayUpright(view.bounds.size) { return view.bounds.width }
+    if hasVerticalBar(traitCollection) || isInnerDisplayUpright(view.bounds.size) || straightPortrait { return view.bounds.width }
     // A phone on its side: the drawer is a column of a usual width, not 88% of a very wide window.
-    return min(view.bounds.width * drawerFraction, ChatLayout.drawerMost)
+    return min(view.bounds.width * (straightPhone ? ChatLayout.drawerStraight : drawerFraction), ChatLayout.drawerMost)
   }
 
   override func viewDidLoad() {
@@ -312,6 +322,7 @@ final class RootContainerViewController: UIViewController, UIGestureRecognizerDe
     view.addSubview(dim)
     addChild(sideNav)
     view.addSubview(sideNav.view)
+    sideNav.view.backgroundColor = Palette.card
     sideNav.didMove(toParent: self)
     let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
     pan.delegate = self
@@ -360,6 +371,15 @@ final class RootContainerViewController: UIViewController, UIGestureRecognizerDe
     if !dragging { layoutPanes(animated: false) }
   }
 
+  /// A turn: a finger still on the drawer lets go where it is (its range was for the old shape), and the list decides its bar for the
+  /// new shape now, inside the turn, not in its first layout afterwards.
+  override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+    super.viewWillTransition(to: size, with: coordinator)
+    refreshShape(size)
+    if dragging { release(velocity: 0) }
+    sidebar.prepareBar(windowSize: size)
+  }
+
   // A turn between upright and sideways is the system's own (no snapshot, no fade): a page that lays itself out for the new shape in
   // `viewDidLayoutSubviews` is turned into place by the system the way every other app on the device is.
 
@@ -369,6 +389,7 @@ final class RootContainerViewController: UIViewController, UIGestureRecognizerDe
   /// in its place, and the swap back to the real thing at the end of the slide showed as a change of colour.)
   private func layoutPanes(animated: Bool) {
     defer { memory.started(view.window != nil && view.bounds.width > 100) }
+    refreshShape(view.bounds.size)
     let bounds = view.bounds
     let width = sidebarWidth
     let docked = wide
@@ -893,6 +914,8 @@ final class RootContainerViewController: UIViewController, UIGestureRecognizerDe
   /// Slides the drawer in or out from wherever it is, quickly and with no overshoot.
   private func slide(to opening: Bool, width: CGFloat) {
     sliding = true
+    slideToken += 1
+    let token = slideToken
     if moving {
       handStrip(opening: opening)   // turned round mid-slide
     } else {
@@ -914,14 +937,16 @@ final class RootContainerViewController: UIViewController, UIGestureRecognizerDe
       self.dim.alpha = opening ? self.dimOpen : 0
     }
     animator.addCompletion { [weak self] _ in
-      guard let self, self.open == opening else { return }
+      // Only the latest slide settles things (an earlier one, ending in the middle of a later one, must not snap it to rest), and
+      // at the width of now (a turn may have changed it on the way).
+      guard let self, self.open == opening, token == self.slideToken else { return }
       self.sliding = false
       self.moving = false
       self.pendingHand?.cancel()
       self.pendingHand = nil
       self.picture?.removeFromSuperview()
       self.picture = nil
-      self.placeDrawer(width: width)
+      self.placeDrawer(width: self.sidebarWidth)
       self.restDrawer(open: opening)
     }
     animator.startAnimation()

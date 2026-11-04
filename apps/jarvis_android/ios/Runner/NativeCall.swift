@@ -47,6 +47,12 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
   private var reactorSize: NSLayoutConstraint!
   private var worksHeight: NSLayoutConstraint!
   private var stripSignature = ""
+  private var tallLayout: [NSLayoutConstraint] = []
+  private var shortLayout: [NSLayoutConstraint] = []
+  private var shortWindow = false
+  private var rebuildPending = false
+  private var closing = false
+  private var modeItem: UIBarButtonItem?
   /// A work that comes ready while the call goes on is shown at once.
   private let autoWorks = WorksAutoPop()
   /// Duo: before anyone has said anything the reactor stands large in the middle with the level bars under it; once there are
@@ -131,7 +137,10 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
     youPill.layer.cornerRadius = 22
     youPill.layer.cornerCurve = .continuous
     youPill.layer.borderWidth = 0.5
-    youPill.layer.borderColor = Palette.outlineVariant.cgColor
+    youPill.layer.borderColor = Palette.outlineVariant.resolvedColor(with: traitCollection).cgColor
+    registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (page: CallViewController, _: UITraitCollection) in
+      page.youPill.layer.borderColor = Palette.outlineVariant.resolvedColor(with: page.traitCollection).cgColor
+    }
     youPill.translatesAutoresizingMaskIntoConstraints = false
     youPill.addSubview(youLabel)
     let youRow = UIView()
@@ -244,13 +253,8 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
         return c
       }(),
       transcript.topAnchor.constraint(equalTo: stage.bottomAnchor, constant: 16),
-      transcript.leadingAnchor.constraint(equalTo: stage.leadingAnchor), transcript.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
-      transcript.bottomAnchor.constraint(equalTo: bottom.topAnchor, constant: -12),
+      transcript.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
       recover.centerXAnchor.constraint(equalTo: guide.centerXAnchor), recover.topAnchor.constraint(equalTo: stage.bottomAnchor, constant: 8),
-      bottom.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: 22),
-      bottom.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -22),
-      bottom.widthAnchor.constraint(lessThanOrEqualToConstant: 380),
-      bottom.centerXAnchor.constraint(equalTo: guide.centerXAnchor),
       bottom.bottomAnchor.constraint(equalTo: rule.topAnchor, constant: -10),
       minimizeButton.widthAnchor.constraint(equalToConstant: 44), minimizeButton.heightAnchor.constraint(equalToConstant: 44),
       hangupButton.widthAnchor.constraint(equalToConstant: 44), hangupButton.heightAnchor.constraint(equalToConstant: 44),
@@ -259,6 +263,30 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
       works.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: 28), works.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -28),
       works.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
     ])
+    // Upright: the talk button is centred under the words. On its side (a short window) the words need the room, so the button
+    // stands at the left, low, and the words take the rest of the width beside it.
+    tallLayout = [
+      transcript.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
+      transcript.bottomAnchor.constraint(equalTo: bottom.topAnchor, constant: -12),
+      // As wide as the window less the margins, at most 380 pt (on a 440 pt phone both margins and the cap cannot hold at once, so the
+      // margins are the minimum and the width the wish).
+      bottom.leadingAnchor.constraint(greaterThanOrEqualTo: guide.leadingAnchor, constant: 22),
+      bottom.trailingAnchor.constraint(lessThanOrEqualTo: guide.trailingAnchor, constant: -22),
+      bottom.widthAnchor.constraint(lessThanOrEqualToConstant: 380),
+      {
+        let c = bottom.widthAnchor.constraint(equalTo: guide.widthAnchor, constant: -44)
+        c.priority = .defaultHigh
+        return c
+      }(),
+      bottom.centerXAnchor.constraint(equalTo: guide.centerXAnchor),
+    ]
+    shortLayout = [
+      bottom.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: 28),
+      bottom.widthAnchor.constraint(equalToConstant: 96),
+      transcript.leadingAnchor.constraint(equalTo: bottom.trailingAnchor, constant: 20),
+      transcript.bottomAnchor.constraint(equalTo: rule.topAnchor, constant: -10),
+    ]
+    NSLayoutConstraint.activate(tallLayout)
     // A touch anywhere (but on a button) holds JARVIS's voice while it speaks, and the next one lets it go on.
     let tapPause = UITapGestureRecognizer(target: self, action: #selector(tappedPause(_:)))
     tapPause.cancelsTouchesInView = false
@@ -288,14 +316,36 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
   }
 
   /// The system's bar carries the call's buttons: along the side (a vertical strip) or, held upright on the inner display, along the top.
-  private var usesBar: Bool { hasVerticalBar(traitCollection) || isInnerDisplayUpright(view.window?.bounds.size ?? view.bounds.size) }
+  /// A straight phone (the Pro Max sizes) has the same page as the foldable's (the round talk button, the large reactor that moves up
+  /// once someone speaks, the buttons in a bar), with the bar drawn by the navigation controller along the top. The foldable's own
+  /// pages are as they were.
+  private var usesBar: Bool {
+    hasVerticalBar(traitCollection) || isInnerDisplayUpright(view.window?.bounds.size ?? view.bounds.size) || isStraightPhone(view)
+  }
   private var barKind = 0
 
   override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
     // A turn between upright and sideways changes the bar without changing the traits.
     let kind = hasVerticalBar(traitCollection) ? 1 : 2
-    if isViewLoaded, usesBar != strip || (strip && kind != barKind) { applyStrip(); stripSignature = ""; refresh() }
+    let short = view.bounds.height < 520 && strip && isStraightPhone(view)
+    if short != shortWindow {
+      shortWindow = short
+      if short { NSLayoutConstraint.deactivate(tallLayout); NSLayoutConstraint.activate(shortLayout) }
+      else { NSLayoutConstraint.deactivate(shortLayout); NSLayoutConstraint.activate(tallLayout) }
+      view.setNeedsLayout()
+    }
+    if isViewLoaded, usesBar != strip || (strip && kind != barKind), !rebuildPending {
+      // Not in this layout pass: the strip's rebuild lays out again (the stage) and changes the page's state.
+      rebuildPending = true
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        self.rebuildPending = false
+        self.applyStrip()
+        self.stripSignature = ""
+        self.refresh()
+      }
+    }
   }
 
   /// Beside a vertical strip the system's bar carries the page's buttons (minimize, works and recover at the top, hang up at the
@@ -345,7 +395,11 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
   /// item to its first, and joins neighbours with no space between them into one capsule.
   private func updateStripItems(tasks: Int) {
     guard strip else { return }
-    let signature = "\(ptt)|\(voiceName())|\(tasks)|\(voice.needsRecovery)"
+    // The switch follows the setting at every refresh, whether or not the bar is rebuilt: it is the same view all through the call,
+    // and it moves its own pill.
+    modeToggle?.sync(ptt: ptt)
+    let denied = voice.permissionDenied
+    let signature = "\(voiceName())|\(tasks)|\(voice.needsRecovery)|\(denied)"
     guard signature != stripSignature else { return }
     stripSignature = signature
     // Every picture the same visual size: the wide or filled ones are drawn smaller so none looks bigger than the others.
@@ -358,21 +412,29 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
     }
     // The way of talking is one switch, not two buttons: a capsule with the two ways stacked in it and a raised pill that slides
     // to the one that is on (a microphone: hold to talk; sound bars: hands-free).
-    // One switch for the whole call: a new one at every change would cut the movement of the old one short.
+    // One switch, and one bar item holding it, for the whole call: a new one would take the view out of its place in the middle of its
+    // own movement.
     let horizontal = barKind == 2
-    if modeToggle?.isHorizontal != horizontal { modeToggle = nil }
+    if modeToggle?.isHorizontal != horizontal { modeToggle = nil; modeItem = nil }
     let toggle = modeToggle ?? ModeToggle(ptt: ptt, horizontal: horizontal) { [weak self] mode in self?.chooseMode(mode) }
     modeToggle = toggle
     toggle.sync(ptt: ptt)
-    let modeItem = UIBarButtonItem(customView: toggle)
-    modeItem.accessibilityLabel = "对话方式"
-    if #available(iOS 27.1, *), !horizontal { modeItem.axisBehavior = .verticalPreferred }
-    // The switch is its own glass: the bar's capsule around a custom view would be a second one.
-    if #available(iOS 26.0, *) { modeItem.hidesSharedBackground = true }
+    let modeItem: UIBarButtonItem
+    if let kept = self.modeItem {
+      modeItem = kept
+    } else {
+      modeItem = UIBarButtonItem(customView: toggle)
+      modeItem.accessibilityLabel = "对话方式"
+      if #available(iOS 27.1, *), !horizontal { modeItem.axisBehavior = .verticalPreferred }
+      // The switch is its own glass: the bar's capsule around a custom view would be a second one.
+      if #available(iOS 26.0, *) { modeItem.hidesSharedBackground = true }
+      self.modeItem = modeItem
+    }
     let voiceItem = item("speaker.wave.2", "音色：\(voiceName().isEmpty ? "未选择" : voiceName())", size: 17) { [weak self] in self?.pickVoice() }
     var right: [UIBarButtonItem] = []
     if voice.needsRecovery {
-      right.append(item("arrow.clockwise", "恢复语音") { [weak self] in self?.recoverCall() })
+      // A refused microphone is not given back by trying again: the button says it takes the person to the settings.
+      right.append(item(denied ? "gearshape" : "arrow.clockwise", denied ? "打开设置" : "恢复语音") { [weak self] in self?.recoverCall() })
       right.append(.fixedSpace(0))
     }
     if tasks > 0 {
@@ -397,7 +459,12 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
   /// Lays the stage out for the first or the second part of the call, animating from one to the other.
   private func setStage(conversing now: Bool, animated: Bool) {
     guard strip else { return }
+    let changed = conversing != now
     conversing = now
+    let animate = animated && changed && !UIAccessibility.isReduceMotionEnabled
+    // The status and the level bars change their arrangement, their sizes and their type: none of that can be tweened, so they are
+    // not seen while it happens and come back in the new arrangement as the reactor settles in its new place.
+    if animate { info.layer.removeAllAnimations(); info.alpha = 0 }
     let apply = {
       self.stage.axis = now ? .horizontal : .vertical
       self.stage.alignment = .center
@@ -411,12 +478,17 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
       self.status.font = .systemFont(ofSize: now ? 17 : 20, weight: .semibold)
       self.hint.font = .systemFont(ofSize: now ? 12 : 14)
       self.hint.textAlignment = now ? .natural : .center
-      self.view.layoutIfNeeded()
     }
-    if animated && !UIAccessibility.isReduceMotionEnabled {
-      UIView.animate(withDuration: 0.65, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0, options: [.beginFromCurrentState], animations: apply)
+    if animate {
+      apply()
+      UIView.animate(withDuration: 0.65, delay: 0, usingSpringWithDamping: 0.9, initialSpringVelocity: 0, options: [.beginFromCurrentState]) {
+        self.view.layoutIfNeeded()
+      }
+      UIView.animate(withDuration: 0.3, delay: 0.3, options: [.curveEaseOut, .allowUserInteraction]) { self.info.alpha = 1 }
     } else {
       apply()
+      info.alpha = 1
+      view.layoutIfNeeded()
     }
   }
 
@@ -580,6 +652,9 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
 
   /// Closes the whole page, even when a picker or the works sheet stands on it.
   private func closePage() {
+    // The call's state keeps changing while the page goes: it is asked to go once.
+    guard !closing else { return }
+    closing = true
     (navigationController?.presentingViewController ?? presentingViewController)?.dismiss(animated: true)
   }
 
@@ -589,6 +664,7 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
   }
 
   private func hangUp() {
+    guard !closing else { return }
     Task { await voice.stop() }
     closePage()
   }

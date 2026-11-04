@@ -157,9 +157,11 @@ final class ModeToggle: UIView {
     let look = UIImage.SymbolConfiguration(pointSize: 19, weight: .semibold)
     let press = UIImage(systemName: "hand.point.up.left.fill", withConfiguration: look) ?? UIImage(systemName: "hand.tap.fill", withConfiguration: look)
     let bars = UIImage(systemName: "waveform", withConfiguration: look)
-    let light = Palette.onSurface.resolvedColor(with: traitCollection), dark = Palette.surface.resolvedColor(with: traitCollection)
-    for (view, image, colour) in [(holdLight, press, light), (holdDark, press, dark), (freeLight, bars, light), (freeDark, bars, dark)] {
-      view.image = image?.withTintColor(colour, renderingMode: .alwaysOriginal)
+    pressImage = press
+    barsImage = bars
+    retint()
+    registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (toggle: ModeToggle, _: UITraitCollection) in toggle.retint() }
+    for view in [holdLight, holdDark, freeLight, freeDark] {
       view.contentMode = .center
       view.isUserInteractionEnabled = false
       glass.contentView.addSubview(view)
@@ -175,6 +177,17 @@ final class ModeToggle: UIView {
   }
 
   required init?(coder: NSCoder) { fatalError() }
+
+  private var pressImage: UIImage?, barsImage: UIImage?
+
+  /// The icons are drawn in the colours of the theme the switch is in now (it is made before it has a window, and a theme may change
+  /// in the middle of a call).
+  private func retint() {
+    let light = Palette.onSurface.resolvedColor(with: traitCollection), dark = Palette.surface.resolvedColor(with: traitCollection)
+    for (view, image, colour) in [(holdLight, pressImage, light), (holdDark, pressImage, dark), (freeLight, barsImage, light), (freeDark, barsImage, dark)] {
+      view.image = image?.withTintColor(colour, renderingMode: .alwaysOriginal)
+    }
+  }
 
   override var intrinsicContentSize: CGSize { size }
 

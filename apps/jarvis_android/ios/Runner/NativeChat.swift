@@ -614,7 +614,7 @@ final class ChatViewController: UIViewController {
       welcome.rootView = WelcomeView(
         greeting: greeting, starters: store.starters, foldable: isFoldablePhone(view),
         screenHeight: view.window?.bounds.height ?? 680, onPick: { [weak self] starter in self?.pick(starter) },
-        onFigure: { LaunchLanding.figure = $0 }, bottomGap: max(view.window?.safeAreaInsets.bottom ?? 34, 20) + 1, keyboard: keyboardUp,
+        onFigure: { [weak self] in if self?.store.current.messages.isEmpty ?? false { LaunchLanding.figure = $0 } }, bottomGap: max(view.window?.safeAreaInsets.bottom ?? 34, 20) + 1, keyboard: keyboardUp,
         paneWidth: dockedMode ? view.safeAreaLayoutGuide.layoutFrame.width : nil)
       starterCards.set(store.starters, onPick: { [weak self] in self?.pick($0) })
     }
