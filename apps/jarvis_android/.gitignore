@@ -49,3 +49,9 @@ app.*.map.json
 
 # Brand resources are source assets, even when the parent repo ignores screenshots.
 !android/app/src/main/res/**/*.png
+
+# Android release signing stays outside the repository.
+/android/key.properties
+**/*.keystore
+**/*.jks
+!assets/*.png

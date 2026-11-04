@@ -1,0 +1,29 @@
+name: jarvis_android
+description: Private Flutter client for the existing Jarvis service.
+publish_to: none
+version: 0.4.62+94
+environment:
+  sdk: ^3.13.0
+dependencies:
+  file_selector: 1.1.0
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  flutter_markdown_plus: 1.0.12
+  markdown: 7.3.1
+  record: 7.1.2
+  url_launcher: 6.3.3
+  video_player: 2.14.1
+dev_dependencies:
+  integration_test:
+    sdk: flutter
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  fake_async: 1.3.3
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/jarvis-core.webp
+    - assets/jarvis-icon-night.png

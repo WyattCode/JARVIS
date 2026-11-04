@@ -1,3 +1,8 @@
+# JARVIS clients
+
+- **Android (Flutter), 0.4.62+94:** [Android build and release notes](ANDROID.md).
+- **iOS (native Swift):** the existing native client and instructions below remain current.
+
 # JARVIS app (iOS, Swift)
 
 The phone app for the self-hosted JARVIS voice assistant: chat, voice calls, image and video generation, with a
