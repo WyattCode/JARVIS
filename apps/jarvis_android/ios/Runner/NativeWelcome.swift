@@ -20,6 +20,7 @@ struct ReactorRep: UIViewRepresentable {
     view.isAccessibilityElement = true
     view.accessibilityLabel = "JARVIS"
     view.apply(["mode": "idle", "dark": scheme == .dark], animated: false)
+    LaunchFigure.shared.pageReactor = view
     return view
   }
 
@@ -36,12 +37,18 @@ struct ReactorRep: UIViewRepresentable {
 final class LaunchFigure: ObservableObject {
   static let shared = LaunchFigure()
   @Published var hidden = false
+  /// The welcome page's reactor, so that the launch reactor can hand over to it in step (see `ReactorView.adoptClock`).
+  weak var pageReactor: ReactorView?
+  /// The figure shows at once, not by a fade: it comes up under a reactor that stands on exactly its place and looks the same.
+  var instant = false
 }
 
 struct WelcomeView: View {
   let greeting: String
   let starters: [Starter]
   let foldable: Bool
+  /// A straight phone (the Pro Max sizes): the figure and the lines under it stand in the middle of the room above the cards.
+  var straight = false
   var screenHeight: CGFloat = 680
   let onPick: (Starter) -> Void
   /// Where the moving figure stands, in the window (the launch flight lands on it).
@@ -97,14 +104,14 @@ struct WelcomeView: View {
       let space = height - (showCards ? cardsHeight + below : 0)
       let fit = Self.fit(space: space, narrow: narrow)
       let figure = fit.figure, showFigure = fit.showFigure, showHint = fit.showHint, group = fit.group
-      let top = max(8, (space - group) * 0.4)
+      let top = max(8, (space - group) * (straight ? 0.5 : 0.4))
       ZStack(alignment: .top) {
         VStack(spacing: 0) {
           if showFigure {
             ReactorRep()
               .frame(width: figure, height: figure * 0.9)
               .opacity(launch.hidden ? 0 : 1)
-              .animation(.easeInOut(duration: 0.32), value: launch.hidden)
+              .animation(launch.instant ? nil : .easeInOut(duration: 0.32), value: launch.hidden)
               .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onFigure($0) }
             Spacer().frame(height: 22)
           }
@@ -142,6 +149,10 @@ final class StarterCards: UIView {
   var narrow = false {
     didSet { if narrow != oldValue { rebuild() } }
   }
+  /// A straight phone: the small lines on the cards are one size up (they were hard to read at arm's length).
+  var straight = false {
+    didSet { if straight != oldValue { rebuild() } }
+  }
 
   static func tile(narrow: Bool) -> CGFloat { narrow ? 78 : 88 }
   static func height(narrow: Bool) -> CGFloat { tile(narrow: narrow) * 2 + 10 }
@@ -156,7 +167,7 @@ final class StarterCards: UIView {
   private func rebuild() {
     cards.forEach { $0.removeFromSuperview() }
     cards = starters.prefix(4).map { s in
-      let card = StarterCard(narrow: narrow)
+      let card = StarterCard(narrow: narrow, straight: straight)
       card.set(s)
       card.addAction(UIAction { [weak self] _ in self?.onPick(s) }, for: .touchUpInside)
       addSubview(card)
@@ -180,7 +191,7 @@ private final class StarterCard: UIControl {
   private let detail = UILabel()
   private let narrow: Bool
 
-  init(narrow: Bool) {
+  init(narrow: Bool, straight: Bool = false) {
     self.narrow = narrow
     super.init(frame: .zero)
     registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: StarterCard, _: UITraitCollection) in
@@ -191,9 +202,9 @@ private final class StarterCard: UIControl {
     layer.cornerCurve = .continuous
     layer.borderWidth = 1
     layer.borderColor = Palette.outlineVariant.cgColor
-    title.font = .systemFont(ofSize: narrow ? 14 : 15, weight: .bold)
+    title.font = .systemFont(ofSize: narrow && !straight ? 14 : 15, weight: .bold)
     title.textColor = Palette.onSurface
-    detail.font = .systemFont(ofSize: narrow ? 12 : 13)
+    detail.font = .systemFont(ofSize: narrow && !straight ? 12 : 13)
     detail.textColor = Palette.onSurfaceVariant
     detail.numberOfLines = 2
     for label in [title, detail] {

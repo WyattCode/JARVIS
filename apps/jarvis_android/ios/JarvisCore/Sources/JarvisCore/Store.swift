@@ -191,7 +191,12 @@ public final class JarvisStore: ObservableObject {
     // Orphans left by a crash or an earlier version; never while the saved state could not be read.
     if loaded {
       blobsDirty = true
-      await collectBlobs()
+      // Not before the first page is up: listing the stored files and deleting orphans runs on the main thread, and with many
+      // attachments it held the first page (and the launch flight) back. A short while later is as good for a clean-up.
+      Task { [weak self] in
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        await self?.collectBlobs()
+      }
     }
     if api.cookie != nil { await connect() }
     for owner in conversations {

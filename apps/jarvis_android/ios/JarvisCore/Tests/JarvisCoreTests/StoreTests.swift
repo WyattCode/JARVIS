@@ -406,6 +406,9 @@ final class StoreTests: XCTestCase {
     try vault.writeBlob("orphan", Data([1]))
     try vault.writeState(#"{"version":1,"server":"https://jarvis.test","conversations":[{"id":"a","messages":[]}]}"#)
     await store.initialize()
+    // The clean-up is not part of starting (it waited for the first page before); it runs a moment after.
+    XCTAssertNotNil(try vault.readBlob("orphan"), "not before the first page is up")
+    await store.collectBlobs()
     XCTAssertNil(try vault.readBlob("orphan"))
   }
 

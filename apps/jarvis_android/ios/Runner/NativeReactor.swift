@@ -48,6 +48,16 @@ final class ReactorView: UIView {
 
   required init?(coder: NSCoder) { fatalError() }
 
+  /// Takes the clock of another reactor: the ring turns, and the pulses beat, in step with it from now on. (Two reactors that change
+  /// places by a crossfade would otherwise show two rings, a little apart, for the moment of it.)
+  func adoptClock(from other: ReactorView) {
+    seconds = other.seconds
+    signature = other.signature
+    direction = other.direction
+    phase = other.phase
+    started = other.started
+  }
+
   func apply(_ a: [String: Any], animated: Bool) {
     let now = CACurrentMediaTime()
     if let newMode = a["mode"] as? String, newMode != mode {

@@ -465,6 +465,7 @@ final class ChatViewController: UIViewController {
     let cardsH = StarterCards.height(narrow: narrow)
     if abs(cardsHeight.constant - cardsH) > 0.5 { cardsHeight.constant = cardsH }
     starterCards.narrow = narrow
+    starterCards.straight = isStraightPhone(view)
     let below = max(0, max(view.window?.safeAreaInsets.bottom ?? 34, 20) + 1 - 4)
     if abs(cardsBottom.constant + below) > 0.5 { cardsBottom.constant = -below }
     if !keyboardUp, welcome.view.bounds.height > 0 { welcomeRoom = welcome.view.bounds.height }
@@ -612,7 +613,7 @@ final class ChatViewController: UIViewController {
     list.isHidden = c.messages.isEmpty
     if c.messages.isEmpty {
       welcome.rootView = WelcomeView(
-        greeting: greeting, starters: store.starters, foldable: isFoldablePhone(view),
+        greeting: greeting, starters: store.starters, foldable: isFoldablePhone(view), straight: isStraightPhone(view),
         screenHeight: view.window?.bounds.height ?? 680, onPick: { [weak self] starter in self?.pick(starter) },
         onFigure: { [weak self] in if self?.store.current.messages.isEmpty ?? false { LaunchLanding.figure = $0 } }, bottomGap: max(view.window?.safeAreaInsets.bottom ?? 34, 20) + 1, keyboard: keyboardUp,
         paneWidth: dockedMode ? view.safeAreaLayoutGuide.layoutFrame.width : nil)

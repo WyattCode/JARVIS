@@ -358,6 +358,10 @@ final class NativeComposer: NSObject, UITextViewDelegate {
     let showSend = hasDraft || state.generating
     let canSend = state.ready && hasDraft
     placeholder.isHidden = !textView.text.isEmpty
+    // A straight phone: the hint in the box is a step stronger (it was below the contrast a hint needs), and the voice button at
+    // rest is the quiet round control of the box, so that the bright one is the send button when there is something to send.
+    let straight = isStraightPhone(root)
+    placeholder.textColor = Palette.onSurfaceVariant.withAlphaComponent(straight ? 0.85 : 0.7)
     // The side mic comes in beside the send button once there is something to send.
     sideMic.isHidden = !showSend
     var mainSymbol = "mic.fill"
@@ -374,8 +378,13 @@ final class NativeComposer: NSObject, UITextViewDelegate {
       ? UIImage(systemName: mainSymbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .bold))
       : Self.softMic(size: 21)
     // The bright round button of the Claude app's composer: voice at rest, send (or stop) once there is something to send.
-    configuration.baseBackgroundColor = Palette.onSurface.withAlphaComponent(showSend && !(state.generating || canSend) ? 0.38 : 1)
-    configuration.baseForegroundColor = Palette.surface
+    if straight && !showSend {
+      configuration.baseBackgroundColor = Palette.composerControl
+      configuration.baseForegroundColor = Palette.onSurface
+    } else {
+      configuration.baseBackgroundColor = Palette.onSurface.withAlphaComponent(showSend && !(state.generating || canSend) ? 0.38 : 1)
+      configuration.baseForegroundColor = Palette.surface
+    }
     main.configuration = configuration
     main.configurationUpdateHandler = nil
     main.accessibilityLabel = mainLabel

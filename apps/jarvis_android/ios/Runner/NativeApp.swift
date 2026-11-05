@@ -20,10 +20,9 @@ final class NativeAppRootViewController: UIViewController {
   /// What shows while the saved session is read: the reactor alone, which then flies to its place on the next page.
   private let launch = UIView()
   private let launchReactor = ReactorView()
-  /// The launch screen's own picture (the bold icon the system shows until the app is up), drawn again in the same place and size,
-  /// so that the hand-over from the system's screen to the app's is not seen, and so that the icon can turn into the living reactor
-  /// while it flies.
-  private let launchIcon = UIImageView(image: UIImage(named: "LaunchImage"))
+  /// The launch screen the system shows (LaunchReactor, in the launch storyboard) is a picture of this same reactor, in the same place and size, so that the
+  /// hand-over from the system's screen to the app's is not seen, and so that what flies is one thing from the first frame to the
+  /// landing: the reactor, which comes alive and goes where the page keeps its own.
   /// A light page gets a second reactor in the light colours, faded in over the dark one on the way, so that the one that lands is
   /// not a pale ring on a pale page.
   private var launchTint: ReactorView?
@@ -82,7 +81,7 @@ final class NativeAppRootViewController: UIViewController {
         Task { await store.flushPending() }
       }
     }
-    // The original's launch screen is always dark (LaunchImage), whatever the theme the app then opens in.
+    // The original's launch screen is always dark (LaunchReactor), whatever the theme the app then opens in.
     // The backdrop is its own view: it fades by its alpha, and what it fades over is the page, never a colour mixed on the way.
     backdrop.backgroundColor = UIColor(red: 9 / 255, green: 9 / 255, blue: 11 / 255, alpha: 1)
     backdrop.frame = view.bounds
@@ -93,16 +92,8 @@ final class NativeAppRootViewController: UIViewController {
     launch.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     // The welcome page's figure waits until the launch reactor has landed on it.
     LaunchFigure.shared.hidden = true
-    launchReactor.isUserInteractionEnabled = false
-    launchReactor.isAccessibilityElement = false
-    // Until it flies the icon alone shows, as the system's screen did; the living reactor is made when the flight begins (a hidden
-    // one would be redrawn at every frame all the while the page is built).
-    launchIcon.isUserInteractionEnabled = false
-    launchIcon.isAccessibilityElement = false
-    launchIcon.contentMode = .center
-    launchIcon.frame = CGRect(origin: .zero, size: launchIcon.image?.size ?? CGSize(width: 168, height: 168))
-    launchIcon.center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
-    launch.addSubview(launchIcon)
+    prepareReactors(light: false)
+    launchReactor.alpha = 1
     view.addSubview(launch)
     Task {
       await store.initialize()
@@ -113,8 +104,8 @@ final class NativeAppRootViewController: UIViewController {
 
   override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
-    // The icon keeps the middle of the window (a turn moves it) until the flight begins.
-    if !flightStarted { launchIcon.center = CGPoint(x: view.bounds.midX, y: view.bounds.midY) }
+    // The reactor keeps the middle of the window (a turn moves it) until the flight begins.
+    if !flightStarted { launchReactor.center = CGPoint(x: view.bounds.midX, y: view.bounds.midY) }
   }
 
   /// A turn in the middle of the flight: it ends where it was going (its place was worked out for the old shape).
@@ -212,34 +203,23 @@ final class NativeAppRootViewController: UIViewController {
   private func fly(to target: CGRect?) {
     flightStarted = true
     launch.isUserInteractionEnabled = false
-    #if DEBUG
-      // JARVIS_LAUNCH_HOLD=morph stops the flight with the icon and the reactor on top of each other, to see that they match.
-      if ProcessInfo.processInfo.environment["JARVIS_LAUNCH_HOLD"] == "morph" {
-        prepareReactors(light: false)
-        launchReactor.alpha = 0.5
-        launchIcon.alpha = 0.5
-        return
-      }
-    #endif
     let light = view.traitCollection.userInterfaceStyle == .light
-    prepareReactors(light: light)
+    if light { addTint() }
     let moving = target != nil
-    let duration = moving ? 0.95 : 0.6
+    let duration = moving ? 0.88 : 0.6
     let base = CGAffineTransform(scaleX: Self.iconSide / Self.reactorSide, y: Self.iconSide / Self.reactorSide)
-    let centre = launchIcon.center
-    var iconEnd = CGAffineTransform(scaleX: 1.25, y: 1.25), reactorEnd = base.scaledBy(x: 1.25, y: 1.25)
+    let centre = launchReactor.center
+    var reactorEnd = base.scaledBy(x: 1.25, y: 1.25)
     if let target {
       // The ring's radius is what has to match the page's reactor (it is the smaller of 44% of the width and 46% of the height of
       // the box the page draws it in, which is not a square on the welcome page).
       let radius = min(target.width * 0.44, target.height * 0.46)
       let move = CGAffineTransform(translationX: target.midX - centre.x, y: target.midY - centre.y)
-      iconEnd = move.scaledBy(x: radius / (0.44 * Self.iconSide), y: radius / (0.44 * Self.iconSide))
       reactorEnd = move.scaledBy(x: radius / (0.44 * Self.reactorSide), y: radius / (0.44 * Self.reactorSide))
     }
-    let curve = UICubicTimingParameters(controlPoint1: CGPoint(x: 0.3, y: 0), controlPoint2: CGPoint(x: 0.15, y: 1))
+    let curve = UICubicTimingParameters(controlPoint1: CGPoint(x: 0.33, y: 0), controlPoint2: CGPoint(x: 0.3, y: 1))
     let flight = UIViewPropertyAnimator(duration: duration, timingParameters: curve)
     flight.addAnimations {
-      self.launchIcon.transform = iconEnd
       self.launchReactor.transform = reactorEnd
       self.launchTint?.transform = reactorEnd
     }
@@ -250,24 +230,31 @@ final class NativeAppRootViewController: UIViewController {
       a.startAnimation(afterDelay: delay)
     }
     flightAnimators.append(flight)
-    // The icon turns into the reactor: the living one comes up under the bold one (which stays whole), then the bold one goes, over
-    // a reactor that is whole, so that there is no moment when both are half there and the middle goes dim.
-    run(duration * 0.3, after: 0, .easeOut) { self.launchReactor.alpha = 1 }
-    run(duration * 0.35, after: duration * 0.22) { self.launchIcon.alpha = 0 }
-    // The dark screen lifts off the page as the figure leaves the middle.
-    run(duration * 0.6, after: duration * 0.1) { self.backdrop.alpha = 0 }
+    // The dark screen lifts off the page. On a flight it waits until the reactor is well clear of the middle (where the page keeps
+    // its title) and goes on until the landing: the page comes up around the reactor while it settles, so that nothing else
+    // happens in the last moment, when the eye is on the landing.
+    if moving {
+      run(duration * 0.6, after: duration * 0.3) { self.backdrop.alpha = 0 }
+      // The page comes up as it appears: a small rise into its place over the same stretch, ending exactly in place (the
+      // reactor lands on the page's own spot, and the one that flew is taken away at that moment).
+      if let page = current?.view {
+        page.transform = CGAffineTransform(translationX: 0, y: 14)
+        run(duration * 0.6, after: duration * 0.3, .easeOut) { page.transform = .identity }
+      }
+    }
+    else { run(duration * 0.6, after: duration * 0.1) { self.backdrop.alpha = 0 } }
     if light { run(duration * 0.45, after: duration * 0.35) { self.launchTint?.alpha = 1 } }
     flight.startAnimation()
     if moving {
-      // The page's reactor comes up under the one that flew before that one goes down, so that they trade places by a crossfade and
-      // not a cut. (The flight's end shows it too, in case this timer is late.)
-      let work = DispatchWorkItem { [weak self] in self?.reveal() }
-      flightTimers.append(work)
-      DispatchQueue.main.asyncAfter(deadline: .now() + duration * 0.55, execute: work)
-      run(duration * 0.26, after: duration * 0.74) {
-        self.launchReactor.alpha = 0
-        self.launchTint?.alpha = 0
-      }
+      // The page's reactor turns in step with the one that flies (it is not seen yet). Nothing is ever shown twice: the two are not
+      // on screen together for a moment (two reactors over each other add up and the middle flashes bright), the one that flew is
+      // taken away in the very turn in which the page's own is shown, when the flight ends exactly on its place.
+      LaunchFigure.shared.pageReactor?.adoptClock(from: launchReactor)
+      // A flight that never reports its end (the app sent to the background and brought back in the middle of it) must not leave the
+      // launch layer over the page for good.
+      let guardrail = DispatchWorkItem { [weak self] in self?.finishFlight(immediately: true) }
+      flightTimers.append(guardrail)
+      DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.7, execute: guardrail)
     } else {
       reveal()
       run(duration * 0.7, after: 0, .easeIn) {
@@ -277,27 +264,31 @@ final class NativeAppRootViewController: UIViewController {
     }
   }
 
-  /// The living reactor(s) of the flight, under the icon, drawn big and shown at the icon's size.
+  /// The reactor of the launch layer, drawn big and shown at the launch picture's size (a reactor drawn at that size and then
+  /// stretched up to its landing size would be soft).
   private func prepareReactors(light: Bool) {
-    let side = Self.reactorSide
-    let shrink = CGAffineTransform(scaleX: Self.iconSide / side, y: Self.iconSide / side)
-    func place(_ reactor: ReactorView, dark: Bool) {
-      reactor.isUserInteractionEnabled = false
-      reactor.isAccessibilityElement = false
-      reactor.apply(["mode": "idle", "dark": dark], animated: false)
-      reactor.transform = .identity
-      reactor.frame = CGRect(x: 0, y: 0, width: side, height: side)
-      reactor.center = launchIcon.center
-      reactor.transform = shrink
-      reactor.alpha = 0
-      launch.insertSubview(reactor, belowSubview: launchIcon)
-    }
-    place(launchReactor, dark: true)
-    if light {
-      let tint = ReactorView()
-      place(tint, dark: false)
-      launchTint = tint
-    }
+    launchReactor.isUserInteractionEnabled = false
+    launchReactor.isAccessibilityElement = false
+    launchReactor.apply(["mode": "idle", "dark": true], animated: false)
+    launchReactor.transform = .identity
+    launchReactor.frame = CGRect(x: 0, y: 0, width: Self.reactorSide, height: Self.reactorSide)
+    launchReactor.center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
+    launchReactor.transform = CGAffineTransform(scaleX: Self.iconSide / Self.reactorSide, y: Self.iconSide / Self.reactorSide)
+    if launchReactor.superview == nil { launch.addSubview(launchReactor) }
+  }
+
+  /// A light page gets a second reactor in the light colours, in the same place, faded in over the dark one on the way.
+  private func addTint() {
+    let tint = ReactorView()
+    tint.isUserInteractionEnabled = false
+    tint.isAccessibilityElement = false
+    tint.apply(["mode": "idle", "dark": false], animated: false)
+    tint.frame = launchReactor.bounds
+    tint.center = launchReactor.center
+    tint.transform = launchReactor.transform
+    tint.alpha = 0
+    launch.insertSubview(tint, aboveSubview: launchReactor)
+    launchTint = tint
   }
 
   /// The flight is over (or cut short by a turn): the page's reactor shows, the rest of the launch layer goes. What is still faintly
@@ -314,13 +305,11 @@ final class NativeAppRootViewController: UIViewController {
       }
     }
     flightAnimators = []
+    if !immediately { LaunchFigure.shared.pageReactor?.adoptClock(from: launchReactor) }
+    LaunchFigure.shared.instant = true
     reveal()
-    let remove = { self.launch.removeFromSuperview() }
-    if immediately || (launchReactor.alpha < 0.02 && (launchTint?.alpha ?? 0) < 0.02) {
-      remove()
-    } else {
-      UIView.animate(withDuration: 0.2, delay: 0, options: .curveEaseOut, animations: { self.launch.alpha = 0 }) { _ in remove() }
-    }
+    current?.view.transform = .identity
+    launch.removeFromSuperview()
   }
 
   /// The session ended with a page over the chat (a call, the settings, a sheet) or a dialog up: they go, and the answer they were
