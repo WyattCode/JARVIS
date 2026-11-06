@@ -22,7 +22,7 @@ public enum MessageRows {
   }
 
   public static func rows(
-    _ c: Conversation, generating: Bool, canContinue: Bool = true, canCancelTask: Bool = true
+    _ c: Conversation, generating: Bool, canContinue: Bool = true, canCancelTask: Bool = true, canRegenerate: Bool = true
   ) -> [MessageRow] {
     let last = lastReply(c)
     var rows: [MessageRow] = []
@@ -47,6 +47,8 @@ public enum MessageRows {
       hasher.combine(last == m.id)
       hasher.combine(generating)
       hasher.combine(canContinue)
+      hasher.combine(canRegenerate)
+      hasher.combine(m.revision)
       if let task {
         hasher.combine(task.status)
         hasher.combine(task.progress)
@@ -69,6 +71,7 @@ public enum MessageRows {
           m.attachments.map { .object(["id": .string($0.id), "name": .string($0.name), "kind": .string($0.kind)]) }),
         "lastReply": .bool(last == m.id),
         "canContinue": .bool(canContinue),
+        "canRegenerate": .bool(canRegenerate),
         "generating": .bool(generating),
         "label": .string("正在调用工具…"),
       ]

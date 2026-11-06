@@ -109,6 +109,11 @@ final class EngineAudioDevice: AudioDevice {
     _ = await output.result
   }
 
+  /// The pre-roll of a reply that never started is dropped; the next reply gets its own.
+  func discardHeld() async {
+    warm = Data()
+  }
+
   func flush() async throws {
     epoch += 1
     warm = Data()

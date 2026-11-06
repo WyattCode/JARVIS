@@ -42,6 +42,7 @@ final class FakeAudio: AudioDevice {
   var fed: [Data] = []
   var flushes = 0
   var finishes = 0
+  var discards = 0
   var stops = 0
   var started = 0
   var reconfigured: [Bool] = []
@@ -67,12 +68,18 @@ final class FakeAudio: AudioDevice {
     reconfigured.append(echoCancel)
     self.input = input
   }
-  func feed(_ pcm: Data) async throws { fed.append(pcm) }
+  /// How long handing a chunk to the device takes (a busy player: what the timer's work waits behind).
+  var feedDelay: Double = 0
+  func feed(_ pcm: Data) async throws {
+    if feedDelay > 0 { try? await Task.sleep(nanoseconds: UInt64(feedDelay * 1_000_000_000)) }
+    fed.append(pcm)
+  }
   func flush() async throws {
     if flushFails { throw URLError(.cannotConnectToHost) }
     flushes += 1
   }
   func finish() async throws { finishes += 1 }
+  func discardHeld() async { discards += 1 }
   func preview(_ clip: PcmClip) async throws { previewed.append(clip) }
   func resetRate() async throws { rateResets += 1 }
   func stop() async throws { stops += 1 }
@@ -105,18 +112,22 @@ final class VoiceTests: XCTestCase {
   var store: JarvisStore!
   var audio: FakeAudio!
   var voice: VoiceSession!
+  var vault: MemoryVault!
   var wire: FakeWire { api.wires.last! }
 
   override func setUp() async throws {
     LocalData.sweepOnStart = false
     api = FakeTransport()
-    let efforts: [String: JSONValue] = ["high": .string("chat-voice")]
-    let jarvis: [String: JSONValue] = ["voice_effort_models": .object(efforts)]
+    let efforts: [String: JSONValue] = ["none": .string("chat-voice"), "low": .string("chat-voice-low"), "high": .string("chat-voice-high")]
+    let jarvis: [String: JSONValue] = [
+      "voice_effort_models": .object(efforts), "voice_defaults": .object(["reasoning_effort": .string("none")]),
+    ]
     let chat = ModelInfo("chat-a", "chat-a", metadata: ["jarvis": .object(jarvis)])
     let amy = VoiceInfo("amy", "Amy", "")
     let tts = ModelInfo("tts", "tts", kind: "speech", voices: [amy], defaultVoice: "amy")
     api.modelsResult = .success([chat, tts])
-    store = JarvisStore(api: api, vault: MemoryVault())
+    vault = MemoryVault()
+    store = JarvisStore(api: api, vault: vault)
     store.saveDebounce = 0.01
     await store.initialize()
     _ = await store.login("u", "p")
@@ -134,7 +145,7 @@ final class VoiceTests: XCTestCase {
     }
   }
 
-  func confirm(effort: String = "high", model: String = "chat-voice", voiceId: String = "amy") async {
+  func confirm(effort: String = "none", model: String = "chat-voice", voiceId: String = "amy") async {
     await settle({ [self] in !(wire.sent(type: "session.update").isEmpty) })
     wire.emit(["type": .string("session.updated"), "session": .object(["reasoning": .bool(effort != "none"), "speech_model": .string("tts"), "voice": .string(voiceId), "model": .string(model)])])
     await settle({ [self] in voice.ready })
@@ -155,7 +166,7 @@ final class VoiceTests: XCTestCase {
     XCTAssertEqual(update["voice"], .string("amy"))
     XCTAssertEqual(update["speech_model"], .string("tts"))
     XCTAssertEqual(update["model"], .string("chat-voice"), "the model the server names for this effort")
-    XCTAssertEqual(update["reasoning"], .bool(true))
+    XCTAssertEqual(update["reasoning"], .bool(false), "the chat's high is not the call's")
     XCTAssertEqual(update["turn_detection"], .null, "push to talk")
     XCTAssertEqual(update["tool_choice"], .string("auto"))
     XCTAssertEqual(update["max_response_output_tokens"], .string("inf"))
@@ -170,10 +181,206 @@ final class VoiceTests: XCTestCase {
   func testAConfigurationTheServerChangedIsNotAccepted() async {
     await voice.start(store.current.id)
     await settle({ [self] in !wire.sent(type: "session.update").isEmpty })
-    wire.emit(["type": .string("session.updated"), "session": .object(["reasoning": .bool(true), "speech_model": .string("tts"), "voice": .string("other"), "model": .string("chat-voice")])])
+    wire.emit(["type": .string("session.updated"), "session": .object(["reasoning": .bool(false), "speech_model": .string("tts"), "voice": .string("other"), "model": .string("chat-voice")])])
     await settle({ [self] in voice.error != nil })
     XCTAssertFalse(voice.ready)
     XCTAssertEqual(voice.error, "服务器确认的音色或思考配置不一致，请重新选择")
+  }
+
+  func testTheCatalogIsFetchedAgainBeforeEveryConnection() async {
+    let before = api.modelsCalls
+    await voice.start(store.current.id)
+    await settle({ [self] in !wire.sent(type: "session.update").isEmpty })
+    XCTAssertEqual(api.modelsCalls, before + 1)
+    // The server changes its default while the app is open: the next call follows it.
+    await voice.stop()
+    let efforts: [String: JSONValue] = ["none": .string("chat-voice"), "low": .string("chat-voice-low"), "high": .string("chat-voice-high")]
+    let jarvis: [String: JSONValue] = [
+      "voice_effort_models": .object(efforts), "voice_defaults": .object(["reasoning_effort": .string("low")]),
+    ]
+    api.modelsResult = .success([ModelInfo("chat-a", "chat-a", metadata: ["jarvis": .object(jarvis)]), api.speechModel])
+    await voice.start(store.current.id)
+    await settle({ [self] in !wire.sent(type: "session.update").isEmpty })
+    let update = wire.sent(type: "session.update")[0]["session"]!
+    XCTAssertEqual(update["model"], .string("chat-voice-low"))
+    XCTAssertEqual(update["reasoning"], .bool(true))
+  }
+
+  func testTheChatsThinkingStrengthDoesNotReachTheCall() async {
+    store.setEffort("high")
+    XCTAssertEqual(store.voiceEffort, "none", "follows the server, not the chat")
+    await voice.start(store.current.id)
+    await confirm()
+    XCTAssertTrue(voice.ready)
+    let updates = wire.sent(type: "session.update").count
+    store.setEffort("low")
+    try? await Task.sleep(nanoseconds: 100_000_000)
+    XCTAssertEqual(wire.sent(type: "session.update").count, updates, "changing the chat's strength leaves the call alone")
+    XCTAssertTrue(voice.ready)
+  }
+
+  func testAPickedVoiceStrengthSurvivesACatalogRefreshAndFollowingDoesNot() async {
+    store.changeSettings { $0.voiceEffort = "high" }
+    await store.refreshModelCatalog()
+    XCTAssertEqual(store.voiceEffort, "high")
+    XCTAssertEqual(store.voiceModel(for: "high"), "chat-voice-high")
+    await voice.start(store.current.id)
+    await settle({ [self] in !wire.sent(type: "session.update").isEmpty })
+    let update = wire.sent(type: "session.update")[0]["session"]!
+    XCTAssertEqual(update["model"], .string("chat-voice-high"))
+    XCTAssertEqual(update["reasoning"], .bool(true))
+    store.changeSettings { $0.voiceEffort = "" }
+    XCTAssertEqual(store.voiceEffort, "none")
+  }
+
+  func testAServerWithoutVoiceDefaultsFallsBackToLow() async {
+    api.modelsResult = .success([ModelInfo("chat-a", "chat-a"), api.speechModel])
+    await store.refreshModelCatalog()
+    XCTAssertEqual(store.voiceServerEffort, "low")
+    let bad: [String: JSONValue] = ["voice_defaults": .object(["reasoning_effort": .string("extreme")])]
+    api.modelsResult = .success([ModelInfo("chat-a", "chat-a", metadata: ["jarvis": .object(bad)]), api.speechModel])
+    await store.refreshModelCatalog()
+    XCTAssertEqual(store.voiceServerEffort, "low")
+  }
+
+  func testALateConfirmationOfTheOldConfigurationDoesNotMakeTheCallReady() async {
+    await voice.start(store.current.id)
+    await settle({ [self] in !wire.sent(type: "session.update").isEmpty })
+    store.changeSettings { $0.voiceEffort = "high" }
+    await settle({ [self] in wire.sent(type: "session.update").count >= 2 }, timeout: 3)
+    XCTAssertEqual(wire.sent(type: "session.update").count, 2)
+    // The first update's confirmation arrives after the second was sent.
+    wire.emit(["type": .string("session.updated"), "session": .object(["reasoning": .bool(false), "speech_model": .string("tts"), "voice": .string("amy"), "model": .string("chat-voice")])])
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    XCTAssertFalse(voice.ready, "the newest configuration is not confirmed yet")
+    wire.emit(["type": .string("session.updated"), "session": .object(["reasoning": .bool(true), "speech_model": .string("tts"), "voice": .string("amy"), "model": .string("chat-voice-high")])])
+    await settle({ [self] in voice.ready })
+    XCTAssertTrue(voice.ready)
+  }
+
+  func testAChosenStrengthTheServerHasNoModelForIsRefusedNotSubstituted() async {
+    store.changeSettings { $0.voiceEffort = "medium" }
+    await voice.start(store.current.id)
+    await settle({ [self] in voice.error != nil })
+    XCTAssertEqual(voice.error, "该思考强度暂不可用，挂断后在设置中更换")
+    XCTAssertTrue(wire.sent(type: "session.update").isEmpty, "nothing is sent for a model that does not exist")
+    // An older confirmation must not make the call ready meanwhile; choosing a strength that exists recovers.
+    store.changeSettings { $0.voiceEffort = "high" }
+    await settle({ [self] in !wire.sent(type: "session.update").isEmpty }, timeout: 3)
+    XCTAssertEqual(wire.sent(type: "session.update")[0]["session"]?["model"], .string("chat-voice-high"))
+    XCTAssertNil(voice.error)
+  }
+
+  func testAServerThatListsNoVoiceModelsKeepsTheChatModel() async {
+    api.modelsResult = .success([ModelInfo("chat-a", "chat-a"), api.speechModel])
+    await voice.start(store.current.id)
+    await settle({ [self] in !wire.sent(type: "session.update").isEmpty })
+    XCTAssertEqual(wire.sent(type: "session.update")[0]["session"]?["model"], .string("chat-a"))
+    XCTAssertEqual(wire.sent(type: "session.update")[0]["session"]?["reasoning"], .bool(true), "falls back to low")
+  }
+
+  func testAVoiceTheRefreshTookAwayStopsTheCallWithTheRightWords() async {
+    api.modelsResult = .success([store.models.first { $0.kind == "chat" }!, ModelInfo("tts", "tts", kind: "speech", voices: [VoiceInfo("bob", "Bob", "")], defaultVoice: "bob")])
+    store.changeSettings { $0.voices["tts"] = "amy" }
+    await voice.start(store.current.id)
+    XCTAssertFalse(voice.active)
+    XCTAssertEqual(voice.error, "所选音色不可用，请在设置中重新选择")
+    XCTAssertEqual(voice.status, "音色未确认")
+    XCTAssertTrue(api.wires.isEmpty || wire.sent(type: "session.update").isEmpty)
+  }
+
+  func testAChangeMadeDuringAReplyWaitsForTheReplyToEnd() async {
+    await startCall()
+    XCTAssertTrue(voice.ready)
+    wire.emit(["type": .string("response.created"), "response": .object(["id": .string("r1")])])
+    await settle({ [self] in !voice.thinking ? false : true })
+    let before = wire.sent(type: "session.update").count
+    store.changeSettings { $0.voiceEffort = "high" }
+    try? await Task.sleep(nanoseconds: 450_000_000)
+    XCTAssertEqual(wire.sent(type: "session.update").count, before, "nothing is sent into the middle of the reply")
+    XCTAssertTrue(voice.ready, "the call keeps working with what was confirmed")
+    wire.emit(["type": .string("response.done"), "response": .object(["id": .string("r1"), "status": .string("completed"), "output": .array([])])])
+    await settle({ [self] in wire.sent(type: "session.update").count > before })
+    XCTAssertEqual(wire.sent(type: "session.update").count, before + 1)
+    XCTAssertEqual(wire.sent(type: "session.update").last?["session"]?["model"], .string("chat-voice-high"))
+  }
+
+  func testBargingInDoesNotShutTheMicrophoneForAWaitingChange() async {
+    store.changeSettings { $0.voiceMode = "vad" }
+    await startCall()
+    XCTAssertTrue(voice.ready)
+    wire.emit(["type": .string("response.created"), "response": .object(["id": .string("r1")])])
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    let before = wire.sent(type: "session.update").count
+    store.changeSettings { $0.voiceEffort = "high" }
+    try? await Task.sleep(nanoseconds: 450_000_000)
+    XCTAssertEqual(wire.sent(type: "session.update").count, before, "waiting for the reply")
+    // The server answers the buffer clear the change sent (events are held back until it does).
+    for _ in 0..<wire.sent(type: "input_audio_buffer.clear").count { wire.emit(["type": .string("input_audio_buffer.cleared")]) }
+    // The user starts talking over the reply: the call is not made "not ready" under them.
+    wire.emit(["type": .string("input_audio_buffer.speech_started")])
+    try? await Task.sleep(nanoseconds: 200_000_000)
+    XCTAssertEqual(voice.status, "正在聆听", "the barge-in was really heard")
+    XCTAssertTrue(voice.ready, "the microphone stays open while the user speaks")
+    XCTAssertEqual(wire.sent(type: "session.update").count, before)
+    // Once they have stopped and the turn is done, the change goes out.
+    wire.emit(["type": .string("input_audio_buffer.speech_stopped")])
+    wire.emit(["type": .string("input_audio_buffer.committed"), "item_id": .string("u1")])
+    wire.emit(["type": .string("conversation.item.input_audio_transcription.completed"), "item_id": .string("u1"), "transcript": .string("")])
+    await settle({ [self] in wire.sent(type: "session.update").count > before })
+    XCTAssertEqual(wire.sent(type: "session.update").count, before + 1)
+  }
+
+  func testAChangeThatWentOutAfterTheReplyDoesNotLookReady() async {
+    await startCall()
+    wire.emit(["type": .string("response.created"), "response": .object(["id": .string("r1")])])
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    store.changeSettings { $0.voiceEffort = "high" }
+    try? await Task.sleep(nanoseconds: 450_000_000)
+    wire.emit(["type": .string("response.done"), "response": .object(["id": .string("r1"), "status": .string("completed"), "output": .array([])])])
+    await settle({ [self] in !voice.ready })
+    XCTAssertFalse(voice.ready)
+    XCTAssertEqual(voice.status, "正在确认语音配置", "not the 'ready' of the turn that just ended")
+  }
+
+  func testASpeechStillArrivingAfterTheReplyIsDoneKeepsTheCallBusy() async {
+    await startCall()
+    let before = wire.sent(type: "session.update").count
+    wire.emit(["type": .string("response.created"), "response": .object(["id": .string("r1")])])
+    let pcm = Data(repeating: 0, count: 4800).base64EncodedString()
+    wire.emit(["type": .string("response.audio.delta"), "response_id": .string("r1"), "item_id": .string("a1"), "delta": .string(pcm)])
+    wire.emit(["type": .string("response.done"), "response": .object(["id": .string("r1"), "status": .string("completed"), "output": .array([])])])
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    store.changeSettings { $0.voiceEffort = "high" }
+    try? await Task.sleep(nanoseconds: 450_000_000)
+    XCTAssertEqual(wire.sent(type: "session.update").count, before, "the reply is done but its speech is still coming")
+    XCTAssertTrue(voice.configPending)
+    wire.emit(["type": .string("response.audio.delta"), "response_id": .string("r1"), "item_id": .string("a1"), "delta": .string(pcm)])
+    try? await Task.sleep(nanoseconds: 100_000_000)
+    XCTAssertEqual(wire.sent(type: "session.update").count, before, "still more speech")
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    await settle({ [self] in wire.sent(type: "session.update").count > before })
+    XCTAssertEqual(wire.sent(type: "session.update").count, before + 1)
+    XCTAssertFalse(voice.configPending)
+  }
+
+  func testAServerDefaultThatMovesDuringACallReachesIt() async {
+    await startCall()
+    let before = wire.sent(type: "session.update").count
+    let efforts: [String: JSONValue] = ["none": .string("chat-voice"), "low": .string("chat-voice-low"), "high": .string("chat-voice-high")]
+    let jarvis: [String: JSONValue] = [
+      "voice_effort_models": .object(efforts), "voice_defaults": .object(["reasoning_effort": .string("low")]),
+    ]
+    api.modelsResult = .success([ModelInfo("chat-a", "chat-a", metadata: ["jarvis": .object(jarvis)]), api.speechModel])
+    await store.connect()
+    await settle({ [self] in wire.sent(type: "session.update").count > before })
+    XCTAssertEqual(wire.sent(type: "session.update").last?["session"]?["model"], .string("chat-voice-low"))
+  }
+
+  func testTheServerDefaultIsNotGuessedBeforeTheCatalogIsRead() async {
+    let fresh = JarvisStore(api: FakeTransport(), vault: MemoryVault())
+    XCTAssertFalse(fresh.voiceServerEffortKnown)
+    XCTAssertTrue(store.voiceServerEffortKnown)
   }
 
   func testWithoutTheMicrophoneTheCallDoesNotOpen() async {

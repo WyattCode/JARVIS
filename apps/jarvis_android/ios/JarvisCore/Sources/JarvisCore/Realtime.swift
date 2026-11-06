@@ -175,10 +175,15 @@ public protocol AudioDevice: AnyObject {
   func stop() async throws
   /// Holds what is playing where it is (and plays on from there), without losing the queue.
   func setPaused(_ paused: Bool) async
+  /// Drops the beginning of a reply that the player is still holding back before it starts (it waits for a little more first),
+  /// leaving what is already playing alone. For a reply that was cancelled or failed: its leftovers must not be heard in front
+  /// of the next one.
+  func discardHeld() async
 }
 
 public extension AudioDevice {
   func setPaused(_ paused: Bool) async {}
+  func discardHeld() async {}
 }
 
 public enum AudioError: Error, Equatable {

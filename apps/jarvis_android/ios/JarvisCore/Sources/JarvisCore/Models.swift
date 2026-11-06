@@ -180,6 +180,9 @@ public struct ChatMessage: Codable, Equatable, Sendable, Identifiable {
   public var status: String
   public var error: String?
   public var hidden: Bool
+  /// Counts the times the text was replaced as a whole (not added to); not saved. The list tells a row has changed by its
+  /// length and last character, which a same-length correction in the middle would not move.
+  public var revision = 0
 
   public init(
     _ role: String, _ text: String, reasoning: String = "", status: String = "complete", error: String? = nil,
@@ -194,6 +197,11 @@ public struct ChatMessage: Codable, Equatable, Sendable, Identifiable {
     }
     self.attachments = attachments; self.calls = calls; self.toolResults = toolResults
   }
+
+  /// How a realtime conversation item states this message: "completed", or "incomplete" for a reply that was stopped, failed
+  /// or cut at the length limit. The saved `status` already survives a restart (a reply still running when the app went away
+  /// is read back as "interrupted"), so this stays the same after one.
+  public var wireStatus: String { status == "complete" && error == nil ? "completed" : "incomplete" }
 
   enum Keys: String, CodingKey {
     case id, taskId, attachments, calls, toolResults, role, text, reasoning, status, error, hidden

@@ -110,15 +110,97 @@ public final class VoiceSession: ObservableObject, VoiceHost {
   private var disposed = false
   private var tailOpen = false
   private var hangups = 0
-  private var response: String?
-  private var awaitingItem: String?
+  private var response: String? {
+    // A configuration change that waited for the reply to end goes out as soon as there is no reply.
+    didSet { applyDeferredSettings() }
+  }
+  /// A settings change arrived while the call was busy: it is sent at the next quiet moment, not into the middle of a turn.
+  private var settingsDeferred = false
+  /// The server heard the user start speaking and has not heard them stop (hands-free mode).
+  private var userSpeaking = false { didSet { applyDeferredSettings() } }
+
+  /// Something is going on that a configuration change must not interrupt: a reply being made or spoken, the user talking
+  /// or waiting for what they said to be recognised. Shutting the microphone then (a change makes the call "not ready"
+  /// until the server confirms) would drop the words being spoken.
+  private var busyForConfig: Bool {
+    response != nil || speaking || speechTrailing || userSpeaking || awaitingItem != nil || held || tailOpen
+  }
+
+  /// The server is still sending the reply's speech: it said the reply is done (`response.done`) before it said the speech
+  /// is (`speech_done`), and between two audio segments the player may be idle for a moment, which must not read as quiet.
+  /// A speech that never reports its end stops counting after `speechGrace` without a new chunk.
+  private var speechOpen = false
+  private var lastAudioAt: Date?
+  private let speechGrace: TimeInterval = 8
+  private var speechTrailing: Bool {
+    speechOpen && now().timeIntervalSince(lastAudioAt ?? .distantPast) < speechGrace
+  }
+
+  /// A change is waiting for a quiet moment (shown in the diagnostics, so a long wait can be seen).
+  public var configPending: Bool { settingsDeferred }
+
+  /// Sends a change that waited for a quiet moment. Called wherever the call may have just become quiet.
+  private func applyDeferredSettings() {
+    guard settingsDeferred, wanted, wire != nil, !busyForConfig else { return }
+    settingsDeferred = false
+    updateSettings()
+  }
+  private var awaitingItem: String? { didSet { applyDeferredSettings() } }
   private var expectedVoice: String?
   private var expectedSpeech: String?
   private var expectedModel: String?
-  /// Items of the call (by the server's item id): the message each one is shown as.
-  private var items: [String: (messageId: String, role: String)] = [:]
+  /// The reasoning flag the latest `session.update` asked for; the confirmation is judged against this, not against whatever
+  /// the settings say by the time it arrives.
+  private var expectedReasoning = false
+  /// The settings ask for a configuration the server cannot run; no confirmation of an older one may make the call ready.
+  private var configBlocked = false
+  /// How a reply's audio arrived, for judging the voice: the wait for the first sound, and the stalls after it (an audio
+  /// chunk arriving after what was already queued had finished playing).
+  public private(set) var firstAudioWait: Double?
+  public private(set) var longestStall: Double = 0
+  public private(set) var stalls = 0
+  private var replyAudioLogged = false
+  private var replyStartedAt: Date?
+  private var playbackEndsAt: Date?
+  /// What the call knows of one item the server is writing: the message it is shown as, the reply it belongs to, and the text
+  /// of each of its parts (streamed first, then settled by the text the server gives as final).
+  private struct Item {
+    var messageId: String
+    var role: String
+    var responseId: String?
+    var parts: [Int: String] = [:]
+    /// Final text the server has given but whose reply has not ended yet. It is held, not shown: a reply that ends cancelled,
+    /// failed or incomplete keeps the (longer) text already on the screen.
+    var pending: [Int: String] = [:]
+    /// Parts whose final text is on the screen; a stray delta must not add to them.
+    var settled: Set<Int> = []
+    /// Parts taken from a completed `response.done`'s output, which outranks a done event: nothing replaces them afterwards.
+    var fixed: Set<Int> = []
+
+    var text: String {
+      if parts.count == 1, let only = parts.values.first { return only }
+      return parts.keys.sorted().map { parts[$0] ?? "" }.joined()
+    }
+  }
+
+  /// Items of the call (by the server's item id).
+  private var items: [String: Item] = [:]
   private var cancelled: Set<String> = []
   private var cut: Set<String> = []
+  /// The reply the server announced last (kept after it is done) and the replies already closed, so that a late event for an
+  /// item the call never saw can be told from the reply in flight.
+  private var latestResponse: String?
+  private var finished: [String] = []
+  /// How each reply ended (`response.done`'s status), for the replies still remembered.
+  private var outcomes: [String: String] = [:]
+  /// The item the call page shows as JARVIS's last words.
+  private var lastBotItem: String?
+  /// How many times a reply's streamed text was replaced by the server's final text (shown in the diagnostics).
+  public private(set) var textCorrections = 0
+  /// The reply is over (`response.done`) but its speech has not said so: if no more sound comes this long, what the player
+  /// still holds back is played out instead of waiting for an end marker that may never come.
+  public var speechTailWait: Double = 0.4
+  private let speechWatch = Delay()
   private var heldAt: Date?
   private var closing: Task<Void, Never> = Task {}
   private var previewClosing: Task<Void, Never> = Task {}
@@ -165,7 +247,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     } else if awaitingItem != nil {
       status = "正在识别"
       hint = "正在处理这段语音"
-    } else if speaking {
+    } else if speaking || queuedBytes > 0 {
       status = "正在说话"
       hint = replyHint
     } else if thinking {
@@ -217,11 +299,6 @@ public final class VoiceSession: ObservableObject, VoiceHost {
 
   private func edit(_ id: String, _ body: (inout ChatMessage) -> Void) {
     if let owner { store.updateMessage(owner, id, body) }
-  }
-
-  private func text(of id: String) -> String {
-    guard let owner, let c = store.conversation(owner) else { return "" }
-    return c.messages.first { $0.id == id }?.text ?? ""
   }
 
   /// Sends a typed message into the call. False when it cannot go (the draft stays in the composer).
@@ -307,8 +384,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     if disposed || before != run { return }
     if previewing || audioReader != nil { await stopPreview() }
     if disposed || before != run { return }
-    let speaker = speech
-    if speaker == nil || (!speaker!.voices.isEmpty && !speaker!.voices.contains { $0.id == voice }) {
+    if !voiceAvailable {
       error = "所选音色不可用，请在设置中重新选择"
       status = "音色未确认"
       if recovering { open = true }
@@ -355,18 +431,28 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       if current == run {
         await stopCall(keepOpen: recovering)
         permissionDenied = (error as? AudioError) == .micDenied
-        if let e = error as? JarvisException {
+        if error is VoiceUnavailable {
+          self.error = "所选音色不可用，请在设置中重新选择"
+        } else if let e = error as? JarvisException {
           self.error = e.message
         } else if case AudioError.noInput(let message) = error {
           self.error = message.isEmpty ? "未检测到可用的麦克风" : message
         } else {
           self.error = "无法开启语音，请检查麦克风权限与网络"
         }
-        status = "语音未开启"
+        status = error is VoiceUnavailable ? "音色未确认" : "语音未开启"
         if let e = error as? JarvisException, e.unauthorized { store.expireSession() }
       }
     }
   }
+
+  /// The speech engine is listed and, when it lists voices, the chosen voice is one of them.
+  private var voiceAvailable: Bool {
+    guard let speaker = speech else { return false }
+    return speaker.voices.isEmpty || speaker.voices.contains { $0.id == voice }
+  }
+
+  private struct VoiceUnavailable: Error {}
 
   private func inputHandler() -> @Sendable (Data) -> Void {
     { [weak self] bytes in Task { @MainActor in self?.input(bytes) } }
@@ -386,6 +472,18 @@ public final class VoiceSession: ObservableObject, VoiceHost {
   private func connect(_ current: Int) async throws {
     ready = false
     status = retries > 0 ? "正在重连" : "连接中"
+    // The server's voice defaults and model names may have changed since the last call or connection.
+    let slow = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 500_000_000)
+      guard !Task.isCancelled, let self, current == self.run, self.wanted else { return }
+      self.status = "正在刷新配置"
+    }
+    await store.refreshModelCatalog()
+    slow.cancel()
+    if current != run || !wanted { return }
+    status = retries > 0 ? "正在重连" : "连接中"
+    // The refresh can take a voice or an engine away; say so now instead of failing at the server's confirmation.
+    if !voiceAvailable { throw VoiceUnavailable() }
     let wire = try await store.api.openRealtime()
     if current != run || !wanted {
       await wire.close()
@@ -396,9 +494,17 @@ public final class VoiceSession: ObservableObject, VoiceHost {
 
   private func attach(_ current: Int, _ wire: RealtimeWire) {
     self.wire = wire
+    settingsDeferred = false
+    userSpeaking = false
+    speechOpen = false
+    speechWatch.cancel()
     items = [:]
     cancelled = []
     cut = []
+    latestResponse = nil
+    finished = []
+    outcomes = [:]
+    lastBotItem = nil
     pendingUpdates = 0
     pendingClears = 0
     awaitingItem = nil
@@ -426,15 +532,19 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     updateSettings()
     // Seed complete turns only; a tool receipt is a sourced system note, never new user input.
     if let owner, let c = store.conversation(owner) {
-      let turns = c.messages.filter { ["user", "assistant"].contains($0.role) && !$0.text.isEmpty && $0.status != "generating" }
+      // A half-recognised sentence of the user is not given back as if it had been said whole.
+      let turns = c.messages.filter {
+        !$0.text.isEmpty && ($0.role == "assistant" ? $0.status != "generating" : $0.role == "user" && $0.status == "complete")
+      }
       for m in turns.suffix(40) {
-        send([
-          "type": .string("conversation.item.create"),
-          "item": .object([
-            "type": .string("message"), "role": .string(m.role),
-            "content": .array([.object(["type": .string(m.role == "user" ? "input_text" : "text"), "text": .string(m.text)])]),
-          ]),
-        ])
+        var item: [String: JSONValue] = [
+          "type": .string("message"), "role": .string(m.role),
+          "content": .array([.object(["type": .string(m.role == "user" ? "input_text" : "text"), "text": .string(m.text)])]),
+        ]
+        // Whether a reply was finished is part of what the call remembers: one that was stopped, failed or cut at the length
+        // limit must not be taken for a complete answer.
+        if m.role == "assistant" { item["status"] = .string(m.wireStatus) }
+        send(["type": .string("conversation.item.create"), "item": .object(item)])
       }
     }
   }
@@ -473,11 +583,30 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       return
     }
     guard wire != nil else { return }
+    // A confirmed call that is busy keeps its configuration until it is quiet (the server may refuse a model change in the
+    // middle of a reply, and the microphone would be shut while the user speaks). Not confirmed yet: nothing is running
+    // that the change could break, so send at once.
+    if busyForConfig, ready, !configBlocked {
+      settingsDeferred = true
+      return
+    }
+    settingsDeferred = false
     let speaker = speech
-    let chat = store.models.first { $0.id == store.model }
+    // The call's own strength: the user's pick, else the server's default. The chat's strength has no part in it.
+    let effort = store.voiceEffort
     expectedSpeech = speaker?.id
     expectedVoice = voice
-    expectedModel = JSONValue.object(chat?.metadata ?? [:])["jarvis"]?["voice_effort_models"]?[store.effort]?.string
+    expectedModel = store.voiceModel(for: effort)
+    expectedReasoning = effort != "none"
+    // A server that lists models per strength but none for this one cannot run it; sending the chat model instead would be a
+    // different configuration than the one asked for. (A server that lists none at all is an older one: the chat model stays.)
+    configBlocked = store.voiceModelsListed && expectedModel == nil
+    if configBlocked {
+      ready = false
+      handshake.cancel()
+      fail("该思考强度暂不可用，挂断后在设置中更换")
+      return
+    }
     pendingUpdates += 1
     ready = false
     error = nil
@@ -485,7 +614,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     var session: [String: JSONValue] = [
       "modalities": .array([.string("audio"), .string("text")]), "input_audio_format": .string("pcm16"),
       "output_audio_format": .string("pcm16"), "model": .string(expectedModel ?? store.model),
-      "reasoning": .bool(store.effort != "none"), "voice": .string(voice),
+      "reasoning": .bool(expectedReasoning), "voice": .string(voice),
       "tool_choice": .string(s.tools ? "auto" : "none"),
       "max_response_output_tokens": s.maxTokens > 0 ? .number(Double(s.maxTokens)) : .string("inf"),
       "instructions": .string(
@@ -508,8 +637,35 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     }
   }
 
+  /// One line per reply for judging the voice (the wait for the first sound, the stalls after it); written once, when the
+  /// reply is over or cut off, whichever comes first.
+  private func logReplyAudio(_ how: String) {
+    guard let wait = firstAudioWait, !replyAudioLogged else { return }
+    replyAudioLogged = true
+    NSLog("[voice] %@: first audio after %.2f s, %d stall(s), longest %.2f s", how, wait, stalls, longestStall)
+  }
+
+  /// Records when a chunk of reply audio arrived against what was already queued to play (pcm16, mono).
+  private func noteAudioArrival(_ bytes: Int) {
+    let arrived = now()
+    speechOpen = true
+    lastAudioAt = arrived
+    let length = Double(bytes) / 2 / Double(max(playbackRate, 1))
+    if let ends = playbackEndsAt {
+      if arrived > ends {
+        stalls += 1
+        longestStall = max(longestStall, arrived.timeIntervalSince(ends))
+      }
+      playbackEndsAt = max(arrived, ends).addingTimeInterval(length)
+    } else {
+      if let started = replyStartedAt { firstAudioWait = arrived.timeIntervalSince(started) }
+      playbackEndsAt = arrived.addingTimeInterval(length)
+    }
+  }
+
   private func input(_ bytes: Data) {
     if !wanted { return }
+    if settingsDeferred { applyDeferredSettings() }
     capturedPcmBytes += bytes.count
     if !ready || muted || previewing || wire == nil || (store.settings.voiceMode == "ptt" && !held && !tailOpen) {
       if levels.input != 0 { setLevels(input: 0) }
@@ -532,6 +688,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       setLevels(output: active && !previewing && rms.isFinite ? min(max(rms, 0), 1) : 0, playing: active && !previewing)
       if active != speaking {
         speaking = active
+        if !active { applyDeferredSettings() }
         if !active && previewing {
           previewing = false
           previewLoading = false
@@ -572,6 +729,9 @@ public final class VoiceSession: ObservableObject, VoiceHost {
   public func interrupt() async {
     if playbackPaused { playbackPaused = false; await audio.setPaused(false) }
     audioEpoch += 1
+    speechOpen = false
+    speechWatch.cancel()
+    logReplyAudio("cut off")
     if let response {
       cancelled.insert(response)
       send(["type": .string("response.cancel")])
@@ -693,7 +853,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       pendingUpdates = min(max(pendingUpdates - 1, 0), 100)
       let s = e["session"]
       ready =
-        !audioBlocked && !captureBusy && pendingUpdates == 0 && s?["reasoning"]?.bool == (store.effort != "none")
+        !audioBlocked && !configBlocked && !captureBusy && pendingUpdates == 0 && s?["reasoning"]?.bool == expectedReasoning
         && (expectedSpeech == nil || (s?["speech_model"]?.string == expectedSpeech && s?["voice"]?.string == expectedVoice))
         && (expectedModel == nil || s?["model"]?.string == expectedModel)
       if ready {
@@ -701,18 +861,22 @@ public final class VoiceSession: ObservableObject, VoiceHost {
         retries = 0
         presentReadyState()
         error = nil
-      } else if pendingUpdates == 0 && !audioBlocked && !captureBusy {
+      } else if pendingUpdates == 0 && !audioBlocked && !configBlocked && !captureBusy {
         fail("服务器确认的音色或思考配置不一致，请重新选择")
       }
     case "input_audio_buffer.speech_started":
       if store.settings.voiceMode != "vad" || muted { break }
+      userSpeaking = true
       clearTurnError()
       Task { await interrupt() }
       awaitingItem = nil
       lastYou = ""
       status = "正在聆听"
       hint = "正在听你说话"
+    case "input_audio_buffer.speech_stopped":
+      userSpeaking = false
     case "input_audio_buffer.committed":
+      userSpeaking = false
       if store.settings.voiceMode == "vad" || awaitingItem == "pending" { awaitingItem = id }
     case "localrouter.transcription.partial":
       guard let id else { break }
@@ -751,25 +915,46 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       }
     case "response.created":
       clearTurnError()
+      // The reply that was the latest is closed now: what still arrives for an item it never showed is from an earlier turn.
+      if let previous = latestResponse { close(previous) }
       response = e["response"]?["id"]?.string
+      latestResponse = response
+      lastBotItem = nil
+      speechOpen = false
+      speechWatch.cancel()
+      replyStartedAt = now()
+      replyAudioLogged = false
+      playbackEndsAt = nil
+      firstAudioWait = nil
+      longestStall = 0
+      stalls = 0
       lastBot = ""
       thinking = true
       status = "正在思考"
       hint = "正在整理回复"
     case "response.text.delta", "response.audio_transcript.delta":
       guard let id else { break }
-      let m = bot(id)
+      let m = bot(id, responseId)
       let delta = e["delta"]?.string ?? ""
-      edit(m) { $0.text += delta }
-      lastBot = text(of: m)
+      let part = e["content_index"]?.int ?? 0
+      // Text the server has already given as final is not added to.
+      if items[id]?.settled.contains(part) == true { break }
+      items[id]?.parts[part, default: ""] += delta
+      let whole = items[id]?.text ?? ""
+      edit(m) { $0.text = whole }
+      lastBot = whole
+      lastBotItem = id
       thinking = false
       status = speaking ? "正在说话" : "正在回复"
       hint = replyHint
     case "response.audio.delta":
       guard let id else { break }
-      _ = bot(id)
+      // A reply the server ended as cancelled or failed is not played any further.
+      if let responseId, let outcome = outcomes[responseId], outcome != "completed", outcome != "incomplete" { break }
+      _ = bot(id, responseId)
       let data = Data(base64Encoded: e["delta"]?.string ?? "") ?? Data()
       receivedPcmBytes += data.count
+      noteAudioArrival(data.count)
       let current = run
       let epoch = audioEpoch
       if queuedBytes + data.count > 1_440_000 {
@@ -778,6 +963,8 @@ public final class VoiceSession: ObservableObject, VoiceHost {
         break
       }
       queuedBytes += data.count
+      // Sound is still coming: if the reply is already done, wait for more before playing out what is held back.
+      watchSpeechEnd(responseId)
       audioChain.append(onError: { [weak self] in self?.fail("语音播放失败，文字回复已保留") }) { [weak self] in
         guard let self else { return }
         defer { self.queuedBytes -= data.count }
@@ -788,6 +975,9 @@ public final class VoiceSession: ObservableObject, VoiceHost {
         }
       }
     case "localrouter.response.speech_done", "response.audio.done":
+      speechOpen = false
+      speechWatch.cancel()
+      applyDeferredSettings()
       let current = run
       let epoch = audioEpoch
       audioChain.append(onError: { [weak self] in self?.fail("语音播放失败，文字回复已保留") }) { [weak self] in
@@ -804,17 +994,58 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       }
     case "localrouter.job.created", "localrouter.job.done":
       if let owner { store.voiceTask(owner, e) }
+    case "response.audio_transcript.done", "response.text.done":
+      // The text as the server finally has it (it may have been checked or repaired after it was streamed). It can arrive
+      // before the reply's end is known, so it waits for `response.done` and only a completed reply puts it on the screen.
+      guard let id else { break }
+      let final = (type == "response.text.done" ? e["text"]?.string : e["transcript"]?.string) ?? e["transcript"]?.string ?? e["text"]?.string
+      hold(id, responseId, part: e["content_index"]?.int ?? 0, text: final ?? "")
     case "response.done":
-      thinking = false
-      response = nil
       let result = e["response"] ?? .object([:])
-      for item in result["output"]?.array ?? [] {
-        guard let itemId = item["id"]?.string, let m = items[itemId] else { continue }
-        let state = result["status"]?.string
-        edit(m.messageId) { $0.status = state == "completed" ? "complete" : state == "incomplete" ? "length" : "interrupted" }
+      // `response.done` of a reply that is not the one in flight (an earlier turn finishing late) closes that reply's own items
+      // and leaves the current one alone.
+      let closing = responseId ?? response
+      let inFlight = closing == nil || response == nil || closing == response
+      if inFlight {
+        thinking = false
+        response = nil
+        logReplyAudio("reply")
       }
-      status = speaking ? "正在说话" : mutedInVad ? "已静音" : "已就绪"
-      hint = speaking ? replyHint : mutedInVad ? "点击麦克风恢复聆听" : readyHint
+      let state = result["status"]?.string
+      let completed = state == "completed"
+      let mapped = completed ? "complete" : state == "incomplete" ? "length" : "interrupted"
+      var listed: Set<String> = []
+      for item in result["output"]?.array ?? [] {
+        guard let itemId = item["id"]?.string, !cut.contains(itemId) else { continue }
+        listed.insert(itemId)
+        if completed, (item["role"]?.string ?? "assistant") == "assistant" {
+          // The completed reply's own output is the text (the same order as the web and Android clients); the done events'
+          // text fills in the parts the output does not have.
+          for (index, part) in (item["content"]?.array ?? []).enumerated() {
+            fill(itemId, closing, part: index, text: part["transcript"]?.string ?? part["text"]?.string ?? "")
+          }
+          applyPending(itemId)
+        }
+        if !completed { items[itemId]?.pending = [:] }
+        if let m = items[itemId] { edit(m.messageId) { $0.status = mapped } }
+      }
+      // Whatever else the reply wrote is over as well.
+      if let closing {
+        for (id, item) in items where item.role == "assistant" && item.responseId == closing && !listed.contains(id) && !cut.contains(id) {
+          if completed { applyPending(id) } else { items[id]?.pending = [:] }
+          edit(item.messageId) { if $0.status == "generating" { $0.status = mapped } }
+        }
+        noteOutcome(closing, state ?? "")
+      }
+      // The reply is over but its speech may not be: sound still held back is played out if no more of it comes.
+      if inFlight { endSpeech(closing, state ?? "") } else { speechWatch.cancel() }
+      // A change that waited for this reply may just have gone out: the call is then confirming, not ready, and says so.
+      if ready {
+        // The phone is still saying what the server has already finished writing.
+        let talking = speaking || queuedBytes > 0
+        status = talking ? "正在说话" : mutedInVad ? "已静音" : "已就绪"
+        hint = talking ? replyHint : mutedInVad ? "点击麦克风恢复聆听" : readyHint
+      }
     case "error":
       thinking = false
       let code = e["error"]?["code"]?.string
@@ -851,21 +1082,155 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     }
   }
 
-  private func item(_ id: String, _ role: String) -> String {
+  private func item(_ id: String, _ role: String, _ responseId: String? = nil) -> String {
     if let known = items[id] { return known.messageId }
     let m = addMessage(role, "", status: "generating") ?? ""
-    items[id] = (m, role)
+    items[id] = Item(messageId: m, role: role, responseId: role == "assistant" ? (responseId ?? response) : nil)
     return m
   }
 
   private func user(_ id: String) -> String { item(id, "user") }
-  private func bot(_ id: String) -> String { item(id, "assistant") }
+  private func bot(_ id: String, _ responseId: String? = nil) -> String { item(id, "assistant", responseId) }
+
+  /// A reply is closed: late items of it that the call never saw are no longer taken in.
+  private func close(_ responseId: String) {
+    if finished.contains(responseId) { return }
+    finished.append(responseId)
+    if finished.count > 64 {
+      for old in finished.prefix(finished.count - 64) { outcomes[old] = nil }
+      finished.removeFirst(finished.count - 64)
+    }
+  }
+
+  private func noteOutcome(_ responseId: String, _ state: String) {
+    outcomes[responseId] = state
+    close(responseId)
+  }
+
+  /// Whether an event for this item may touch it: not one of a cancelled reply or of an item that was cut off, not an item of
+  /// another reply, and not an unseen item of a reply already closed (a late one from an earlier turn). Such events are dropped,
+  /// so they cannot change what is shown now.
+  private func admits(_ id: String, _ responseId: String?, ending: Bool = false) -> Bool {
+    if cut.contains(id) { return false }
+    if let responseId, cancelled.contains(responseId) { return false }
+    if let known = items[id] {
+      if known.role != "assistant" { return false }
+      if let responseId, let own = known.responseId, responseId != own { return false }
+      return true
+    }
+    // The reply's own end may name an item it never streamed, even when a newer reply was announced before the end arrived.
+    if let responseId { return ending || !finished.contains(responseId) }
+    return response != nil
+  }
+
+  /// The final text of a part, from a done event. Held until the reply has ended: only a completed reply shows it, a reply that
+  /// was cancelled, failed or stopped short keeps the words already on the screen.
+  private func hold(_ id: String, _ responseId: String?, part: Int, text: String) {
+    if text.isEmpty || !admits(id, responseId) { return }
+    _ = bot(id, responseId)
+    guard let entry = items[id] else { return }
+    if let rid = entry.responseId ?? responseId, let outcome = outcomes[rid] {
+      // The reply's end came first: its outcome decides at once.
+      if outcome == "completed" && !entry.fixed.contains(part) { show(id, part: part, text: text) }
+      return
+    }
+    items[id]?.pending[part] = text
+  }
+
+  /// Puts the held final text of an item on the screen (the reply is completed).
+  private func applyPending(_ id: String) {
+    guard let entry = items[id], !entry.pending.isEmpty else { return }
+    items[id]?.pending = [:]
+    for part in entry.pending.keys.sorted() where !entry.fixed.contains(part) { show(id, part: part, text: entry.pending[part] ?? "") }
+  }
+
+  /// The text of a completed reply's `response.done` output. It outranks a done event's text, so it replaces whatever a
+  /// done event put on the screen and keeps later ones from replacing it.
+  private func fill(_ id: String, _ responseId: String?, part: Int, text: String) {
+    if text.isEmpty || !admits(id, responseId, ending: true) { return }
+    _ = bot(id, responseId)
+    items[id]?.fixed.insert(part)
+    show(id, part: part, text: text)
+  }
+
+  /// Replaces the streamed text of a part with its final text.
+  private func show(_ id: String, part: Int, text: String) {
+    guard var entry = items[id] else { return }
+    let before = entry.text
+    entry.parts[part] = text
+    entry.pending[part] = nil
+    entry.settled.insert(part)
+    items[id] = entry
+    let whole = entry.text
+    if whole != before {
+      textCorrections += before.isEmpty ? 0 : 1
+      edit(entry.messageId) {
+        $0.text = whole
+        $0.revision += 1
+      }
+    }
+    // The call page shows the latest reply; a late correction of an earlier one must not replace it.
+    if lastBotItem == id || (lastBotItem == nil && (entry.responseId == nil || entry.responseId == latestResponse)) {
+      lastBot = whole
+      lastBotItem = id
+    }
+  }
+
+  /// The reply is done but its speech has not said so. If no more sound arrives for a moment, play out what the player holds
+  /// back (it waits for a little more before it starts) instead of leaving the end of the reply unsaid.
+  ///
+  /// The timer belongs to one connection, one reply and one player generation, and is checked again when it fires and when
+  /// the work runs: a hang-up, a lost connection, a barge-in, a new reply or a reply that was cancelled or failed all make it
+  /// stale, and a stale one does nothing (it must neither play an older reply's leftovers nor touch the new reply's audio).
+  private func watchSpeechEnd(_ reply: String? = nil) {
+    speechWatch.cancel()
+    guard speechOpen, response == nil, wanted, let wire else { return }
+    let reply = reply ?? latestResponse
+    // A reply that ended (completed, or stopped at the length limit) is played out; a cancelled or failed one is not.
+    if let reply {
+      guard let outcome = outcomes[reply], outcome == "completed" || outcome == "incomplete" else { return }
+    }
+    let current = run
+    let epoch = audioEpoch
+    let armed = lastAudioAt
+    func ours(_ s: VoiceSession) -> Bool {
+      current == s.run && epoch == s.audioEpoch && s.wanted && s.wire === wire && s.response == nil && s.speechOpen
+        && reply == s.latestResponse && armed == s.lastAudioAt
+    }
+    speechWatch.start(speechTailWait) { [weak self] in
+      guard let self, ours(self) else { return }
+      self.audioChain.append(onError: { [weak self] in self?.fail("语音播放失败，文字回复已保留") }) { [weak self] in
+        guard let self, ours(self) else { return }
+        try await self.audio.finish()
+      }
+    }
+  }
+
+  /// The reply ended with `state`. Once the audio already queued has been handed to the player: a cancelled or failed reply
+  /// loses what the player still holds back (it must not be heard in front of the next reply), and the status is shown again
+  /// (it said "speaking" because sound was queued).
+  private func endSpeech(_ reply: String?, _ state: String) {
+    speechWatch.cancel()
+    guard wanted, let wire else { return }
+    let drain = state == "completed" || state == "incomplete"
+    if drain { watchSpeechEnd(reply) }
+    let current = run
+    let epoch = audioEpoch
+    audioChain.append(onError: {}) { [weak self] in
+      guard let self, current == self.run, epoch == self.audioEpoch, self.wanted, self.wire === wire, self.response == nil,
+        reply == self.latestResponse
+      else { return }
+      if !drain { await self.audio.discardHeld() }
+      if self.ready, self.error == nil, !self.held { self.presentReadyState() }
+    }
+  }
 
   private func lost(_ current: Int, _ lostWire: RealtimeWire) async {
     if wire !== lostWire || current != run || !wanted { return }
     wire = nil
     resetLevels()
     audioEpoch += 1
+    speechWatch.cancel()
     wireReader?.cancel()
     wireReader = nil
     Task { await lostWire.close() }
@@ -879,8 +1244,15 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     tailOpen = false
     awaitingItem = nil
     handshake.cancel()
-    // Mark only the lost connection's items before awaiting device I/O.
-    for (_, item) in items { edit(item.messageId) { if $0.status == "generating" { $0.status = "interrupted" } } }
+    // Mark only the lost connection's items before awaiting device I/O. A reply cut by the connection says so (it is not one the
+    // person stopped).
+    for (_, item) in items {
+      edit(item.messageId) {
+        guard $0.status == "generating" else { return }
+        $0.status = "interrupted"
+        if item.role == "assistant" && !$0.text.isEmpty { $0.error = "连接中断，回复未说完" }
+      }
+    }
     status = "正在重连"
     hint = "连接中断，正在自动重连"
     do { try await audio.flush() } catch {
@@ -905,6 +1277,12 @@ public final class VoiceSession: ObservableObject, VoiceHost {
         try await self.connect(current)
       } catch {
         if current != self.run || !self.wanted { return }
+        if error is VoiceUnavailable {
+          // Trying again cannot bring the voice back.
+          await self.stopCall()
+          self.fail("所选音色不可用，请在设置中重新选择")
+          return
+        }
         if let e = error as? JarvisException, e.unauthorized {
           // Retrying with a session the service rejected only repeats the refusal.
           await self.stopCall()
@@ -1034,6 +1412,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     run += 1
     turn += 1
     tail.cancel()
+    speechWatch.cancel()
     handshake.cancel()
     reconnect.cancel()
     ready = false

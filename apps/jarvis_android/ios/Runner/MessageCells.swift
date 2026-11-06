@@ -391,7 +391,7 @@ final class AssistantCell: MessageCell {
       label.numberOfLines = 0
       note.addArrangedSubview(icon)
       note.addArrangedSubview(label)
-      if canAct { note.addArrangedSubview(link("重试", "retry")) }
+      if canAct && (row.canRegenerate ?? true) { note.addArrangedSubview(link("重试", "retry")) }
       note.addArrangedSubview(UIView())
     } else if status == "length" {
       note.isHidden = false
@@ -404,7 +404,7 @@ final class AssistantCell: MessageCell {
     }
     // Copy and regenerate wait until the reply is written.
     actions.isHidden = text.isEmpty || generating
-    regenerate.isHidden = !(canAct && status != "interrupted")
+    regenerate.isHidden = !(canAct && status != "interrupted" && (row.canRegenerate ?? true))
     accessibilityLabel = "JARVIS"
   }
 

@@ -187,6 +187,8 @@ final class ChatViewController: UIViewController {
     navigationItem.rightBarButtonItems = barRight
     navigationItem.leftItemsSupplementBackButton = true
     store.objectWillChange.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.changed() }.store(in: &bag)
+    // A call starting or ending changes which buttons the rows offer (the status line changes with each, and rarely otherwise).
+    voice.$status.removeDuplicates().receive(on: DispatchQueue.main).sink { [weak self] _ in self?.changed() }.store(in: &bag)
   }
 
   @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
@@ -601,7 +603,9 @@ final class ChatViewController: UIViewController {
       UIAccessibility.post(notification: .announcement, argument: said)
     }
     wasGenerating = generating ? c.id : nil
-    let rows = MessageRows.rows(c, generating: generating)
+    // Regenerating is refused while a call is on in this conversation, so its buttons are not offered then.
+    let inCall = voice.active && voice.conversationId == c.id
+    let rows = MessageRows.rows(c, generating: generating, canRegenerate: !inCall)
     // A different conversation is drawn at once, whatever the throttle says.
     pushRows(rows, force: force || switched)
     if welcome.view.isHidden != !c.messages.isEmpty {

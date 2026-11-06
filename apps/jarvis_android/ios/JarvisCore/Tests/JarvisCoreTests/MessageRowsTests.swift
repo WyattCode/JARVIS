@@ -26,6 +26,25 @@ final class MessageRowsTests: XCTestCase {
     XCTAssertEqual(busy[1].json["kind"]?.string, "tool")
   }
 
+  func testASameLengthCorrectionInTheMiddleStillChangesTheRow() {
+    var c = conversation()
+    let before = MessageRows.rows(c, generating: false).last!.revision
+    let i = c.messages.firstIndex { $0.id == "r1" }!
+    c.messages[i].text = "answer"
+    XCTAssertEqual(MessageRows.rows(c, generating: false).last!.revision, before, "nothing changed")
+    c.messages[i].text = "anSwer"
+    c.messages[i].revision += 1
+    XCTAssertNotEqual(MessageRows.rows(c, generating: false).last!.revision, before)
+  }
+
+  func testRegeneratingIsOfferedOnlyWhenItCanRun() {
+    let on = MessageRows.rows(conversation(), generating: false)
+    let off = MessageRows.rows(conversation(), generating: false, canRegenerate: false)
+    XCTAssertEqual(on.last?.json["canRegenerate"]?.bool, true)
+    XCTAssertEqual(off.last?.json["canRegenerate"]?.bool, false)
+    XCTAssertNotEqual(on.last?.revision, off.last?.revision, "the row is drawn again when a call starts or ends")
+  }
+
   func testRowJSONCarriesWhatTheListReads() {
     let rows = MessageRows.rows(conversation(), generating: false, canContinue: false, canCancelTask: true)
     let user = rows[0].json

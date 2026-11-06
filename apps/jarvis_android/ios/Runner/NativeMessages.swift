@@ -32,6 +32,8 @@ struct RowData: Codable {
   var attachments: [Att]?
   var lastReply: Bool?
   var canContinue: Bool?
+  /// False while a call is on in this conversation: regenerating is refused then, so its buttons are not shown.
+  var canRegenerate: Bool?
   var generating: Bool?
   var task: Task?
   var label: String?
