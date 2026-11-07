@@ -19,6 +19,7 @@ class LayoutApi extends VoiceApi {
       'Chat',
       metadata: {
         'jarvis': {
+          'voice_defaults': {'reasoning_effort': 'high'},
           'voice_effort_models': {'high': 'chat--high'},
         },
       },

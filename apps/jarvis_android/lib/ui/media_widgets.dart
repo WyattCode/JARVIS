@@ -420,7 +420,7 @@ class _MediaPreviewState extends State<MediaPreview> {
                 ),
                 IconButton(
                   tooltip: '打断回复',
-                  onPressed: voice.interrupt,
+                  onPressed: () => voice.interrupt(source: 'reply_interrupt_button'),
                   icon: const Icon(Icons.stop_circle_outlined, size: 20),
                 ),
                 IconButton(

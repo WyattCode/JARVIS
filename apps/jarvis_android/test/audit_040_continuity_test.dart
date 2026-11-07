@@ -57,7 +57,7 @@ void main() {
       final replyingStatus = h.session.status;
       await h.close();
       expect(thinkingStatus, '正在思考');
-      expect(replyingStatus, '正在回复');
+      expect(replyingStatus, '正在准备语音');
     },
   );
   test(

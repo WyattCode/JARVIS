@@ -36,6 +36,7 @@ class VoiceSession extends ChangeNotifier {
     required this.onTask,
     this.refreshCatalog,
     this.isConversationAvailable,
+    this.traceEvent,
     DateTime Function()? now,
   }) : now = now ?? DateTime.now;
   final Future<bool> Function()? refreshCatalog;
@@ -45,6 +46,27 @@ class VoiceSession extends ChangeNotifier {
   _SessionUpdate? _latestSessionUpdate, _confirmedSessionUpdate;
   int _updateSerial = 0;
   final DateTime Function() now;
+  final void Function(Map<String, dynamic>)? traceEvent;
+  String? _traceResponse;
+  int _responseBytes = 0, _playedFrames = 0, _writtenFrames = 0;
+  DateTime? _playbackTraceAt;
+  bool _tracedText = false;
+  void _trace(String phase, [Map<String, dynamic> extra = const {}]) {
+    final record = <String, dynamic>{
+      'phase': phase, 'at': now().toUtc().toIso8601String(),
+      'response_id': _traceResponse, 'audio_epoch': _audioEpoch,
+      'received_bytes': _responseBytes, 'queued_bytes': _queuedBytes,
+      'written_frames': _writtenFrames, 'played_frames': _playedFrames,
+      'buffered_frames': bufferedFrames, 'sample_rate': playbackRate,
+      ...extra,
+    };
+    // Timing/counters only: never microphone audio, reply text or credentials.
+    if (traceEvent != null) {
+      traceEvent!(record);
+    } else {
+      debugPrint('JarvisVoice ${jsonEncode(record)}');
+    }
+  }
   final JarvisTransport api;
   final AudioDevice audio;
   final ChatSettings Function() settings;
@@ -114,8 +136,8 @@ class VoiceSession extends ChangeNotifier {
       status = '正在思考';
       hint = '正在整理回复';
     } else if (replying) {
-      status = '正在回复';
-      hint = _replyHint;
+      status = '正在准备语音';
+      hint = '回复正在转为语音';
     } else {
       status = muted ? '已静音' : '已就绪';
       hint = muted ? '点击麦克风恢复聆听' : _readyHint;
@@ -321,6 +343,7 @@ class VoiceSession extends ChangeNotifier {
         'item': {
           'type': 'message',
           'role': m.role,
+          if (m.role == 'assistant') 'status': m.status == 'complete' ? 'completed' : 'incomplete',
           'content': [
             {'type': m.role == 'user' ? 'input_text' : 'text', 'text': m.text},
           ],
@@ -437,6 +460,18 @@ class VoiceSession extends ChangeNotifier {
       bufferedFrames = (e['buffered_frames'] as num?)?.toInt() ?? 0;
       playbackRate = (e['sample_rate'] as num?)?.toInt() ?? 24000;
       final active = e['active'] == true;
+      _playedFrames = (e['played_frames'] as num?)?.toInt() ?? 0;
+      _writtenFrames = (e['written_frames'] as num?)?.toInt() ?? 0;
+      if (!previewing && _traceResponse != null &&
+          (active != speaking || active &&
+           (_playbackTraceAt == null || now().difference(_playbackTraceAt!).inMilliseconds >= 1000))) {
+        _playbackTraceAt = now();
+        _trace(active ? 'playback' : 'drained', {
+          'native_epoch': e['epoch'], 'underruns': e['underruns'],
+          'monotonic_ms': e['monotonic_ms'],
+          'response_pending': _response != null,
+        });
+      }
       final rms = (e['rms'] as num?)?.toDouble() ?? 0;
       _levels(
         output: active && !previewing && rms.isFinite ? rms.clamp(0.0, 1.0) : 0,
@@ -467,7 +502,7 @@ class VoiceSession extends ChangeNotifier {
       _previewRun++;
       previewing = false;
       previewVoice = null;
-      final interrupted = interrupt();
+      final interrupted = interrupt(source: e['type'] as String);
       _deviceClosing = _deviceClosing
           .catchError((Object _) {})
           .then((_) async {
@@ -496,11 +531,12 @@ class VoiceSession extends ChangeNotifier {
     }
   }
 
-  Future<void> interrupt() async {
+  Future<void> interrupt({String source = 'explicit_interrupt'}) async {
+    _trace('cancel', {'source': source, 'server_active': _response != null});
     _audioEpoch++;
     if (_response != null) {
       _cancelled.add(_response!);
-      _send({'type': 'response.cancel'});
+      _send({'type': 'response.cancel', 'source': source});
     }
     for (final id in _items.keys) {
       if (_items[id]!.role == 'assistant') {
@@ -531,12 +567,13 @@ class VoiceSession extends ChangeNotifier {
     status = '正在聆听';
     hint = '松开发送';
     _send({'type': 'input_audio_buffer.clear'});
-    unawaited(interrupt());
+    unawaited(interrupt(source: 'ptt_press'));
     _changed();
   }
 
   void release() {
     if (!held) return;
+    _trace('input_end', {'source': 'ptt_release', 'input_turn': _turn, 'response_id': null});
     held = false;
     hint = '正在处理这段语音';
     _tailOpen = true;
@@ -671,12 +708,13 @@ class VoiceSession extends ChangeNotifier {
       case 'input_audio_buffer.speech_started':
         if (settings().voiceMode != 'vad' || muted) break;
         _clearTurnError();
-        unawaited(interrupt());
+        unawaited(interrupt(source: 'vad_speech_started'));
         _awaitingItem = null;
         lastYou = '';
         status = '正在聆听';
         hint = '正在听你说话';
       case 'input_audio_buffer.committed':
+        _trace('input_committed', {'item_id': id, 'response_id': null});
         if (settings().voiceMode == 'vad' || _awaitingItem == 'pending') {
           _awaitingItem = id;
         }
@@ -685,7 +723,10 @@ class VoiceSession extends ChangeNotifier {
         final m = _user(id);
         m.text = e['transcript'] as String? ?? '';
         lastYou = m.text;
+      case 'input_audio_buffer.speech_stopped':
+        _trace('input_end', {'source': 'vad_speech_stopped', 'item_id': id, 'response_id': null});
       case 'conversation.item.input_audio_transcription.completed':
+        _trace('transcription_completed', {'item_id': id, 'response_id': null});
         if (id == null) break;
         final m = _user(id);
         m.text = (e['transcript'] as String? ?? '').trim();
@@ -719,6 +760,11 @@ class VoiceSession extends ChangeNotifier {
       case 'response.created':
         _clearTurnError();
         _response = e['response']?['id'] as String?;
+        _traceResponse = _response;
+        _responseBytes = 0;
+        _tracedText = false;
+        _playbackTraceAt = null;
+        _trace('response_created');
         lastBot = '';
         thinking = true;
         status = '正在思考';
@@ -729,17 +775,35 @@ class VoiceSession extends ChangeNotifier {
         final m = _bot(id);
         m.text += e['delta'] as String? ?? '';
         lastBot = m.text;
+        if (!_tracedText && lastBot.isNotEmpty) {
+          _tracedText = true;
+          _trace('first_text');
+        }
         thinking = false;
-        status = speaking ? '正在说话' : '正在回复';
+        status = speaking ? '正在说话' : '正在准备语音';
         hint = _replyHint;
+      case 'response.text.done':
+      case 'response.audio_transcript.done':
+        if (id == null) break;
+        final text = e[type == 'response.text.done' ? 'text' : 'transcript'];
+        if (text is! String) break;
+        if (response != null && response != _response) break;
+        // A server-side cancellation can truncate this transcript before its
+        // response.done reveals the outcome. Only a completed snapshot may
+        // replace visible text with a shorter canonical value.
+        if (text.length < (_items[id]?.text.length ?? 0)) break;
+        _finalText(id, text);
       case 'response.audio.delta':
         if (id == null) break;
         _bot(id);
         final data = base64Decode(e['delta'] as String? ?? '');
         receivedPcmBytes += data.length;
+        final first = _responseBytes == 0;
+        _responseBytes += data.length;
+        if (first && data.isNotEmpty) _trace('first_pcm');
         final run = _run, epoch = _audioEpoch;
         if (_queuedBytes + data.length > 1440000) {
-          unawaited(interrupt());
+          unawaited(interrupt(source: 'output_backlog'));
           _fail('语音播放积压，已停止当前语音；文字回复已保留');
           break;
         }
@@ -785,9 +849,19 @@ class VoiceSession extends ChangeNotifier {
       case 'localrouter.job.done':
         onTask(owner!, e);
       case 'response.done':
+        if (response != null && _traceResponse != null && response != _traceResponse) break;
+        _trace('response_done', {'result': e['response']?['status']});
         thinking = false;
-        _response = null;
         final result = e['response'] as Map? ?? {};
+        if (result['status'] == 'completed') {
+          for (final item in result['output'] as List? ?? []) {
+            if (item is! Map || item['type'] != 'message' || item['role'] != 'assistant' || item['id'] is! String) continue;
+            final content = item['content'] as List? ?? [];
+            final text = content.whereType<Map>().map((part) => part['text'] ?? part['transcript']).whereType<String>().join();
+            if (text.isNotEmpty) _finalText(item['id'] as String, text);
+          }
+        }
+        _response = null;
         for (final item in result['output'] as List? ?? []) {
           final m = _items[item['id']];
           if (m == null) continue;
@@ -827,6 +901,13 @@ class VoiceSession extends ChangeNotifier {
         updateSettings();
     }
     _changed();
+  }
+
+  void _finalText(String id, String text) {
+    final m = _bot(id);
+    _trace('text_final', {'item_id': id, 'streamed_chars': m.text.length, 'final_chars': text.length, 'text_changed': m.text != text});
+    m.text = text;
+    lastBot = text;
   }
 
   ChatMessage _user(String id) => _items.putIfAbsent(id, () {
@@ -906,7 +987,7 @@ class VoiceSession extends ChangeNotifier {
     cancelHold();
     previewing = true;
     previewVoice = voice.id;
-    await interrupt();
+    await interrupt(source: 'voice_preview');
     if (preview != _previewRun) return;
     _audioEvents ??= audio.events.listen(
       _onAudio,
@@ -961,6 +1042,8 @@ class VoiceSession extends ChangeNotifier {
   }
 
   Future<void> _stop() async {
+    _trace('disconnect');
+    _traceResponse = null;
     _wanted = false;
     _sessionUpdates.clear();
     _latestSessionUpdate = _confirmedSessionUpdate = null;

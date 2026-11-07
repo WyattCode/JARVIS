@@ -119,7 +119,10 @@ class PcmPlayer(private val event: (Map<String, Any>) -> Unit) {
             // Report transitions and occupancy, based on the hardware playhead, not just queue emptiness.
             lastActive = active
             mapOf("type" to "playback", "active" to active, "buffered_frames" to frames, "sample_rate" to rate,
-                "epoch" to epoch, "rms" to if (active) levels.levelAt(played) else 0.0)
+                "epoch" to epoch, "written_frames" to submitted, "played_frames" to played,
+                "underruns" to (track?.underrunCount ?: 0),
+                "monotonic_ms" to android.os.SystemClock.elapsedRealtime(),
+                "rms" to if (active) levels.levelAt(played) else 0.0)
         }
         main.post { event(data) }
     }

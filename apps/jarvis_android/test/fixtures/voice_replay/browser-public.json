@@ -1,0 +1,152 @@
+{
+  "events": [
+    {
+      "type": "response.created",
+      "event_id": "event_6",
+      "response": {
+        "id": "resp_000002",
+        "object": "realtime.response",
+        "status": "in_progress",
+        "status_details": null,
+        "output": [],
+        "usage": null
+      }
+    },
+    {
+      "type": "response.audio_transcript.delta",
+      "event_id": "event_10",
+      "response_id": "resp_000002",
+      "item_id": "item_000003",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段"
+    },
+    {
+      "type": "response.audio_transcript.delta",
+      "event_id": "event_11",
+      "response_id": "resp_000002",
+      "item_id": "item_000003",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "合成的语音回放测"
+    },
+    {
+      "type": "response.audio_transcript.delta",
+      "event_id": "event_12",
+      "response_id": "resp_000002",
+      "item_id": "item_000003",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "试文本，用于检查分段接收、最终转写补全与会话结束"
+    },
+    {
+      "type": "response.audio_transcript.delta",
+      "event_id": "event_13",
+      "response_id": "resp_000002",
+      "item_id": "item_000003",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全"
+    },
+    {
+      "type": "response.audio_transcript.delta",
+      "event_id": "event_14",
+      "response_id": "resp_000002",
+      "item_id": "item_000003",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "与会话结束后的内容完整性。这是一段"
+    },
+    {
+      "type": "response.audio_transcript.delta",
+      "event_id": "event_15",
+      "response_id": "resp_000002",
+      "item_id": "item_000003",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的"
+    },
+    {
+      "type": "response.audio_transcript.delta",
+      "event_id": "event_16",
+      "response_id": "resp_000002",
+      "item_id": "item_000003",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "内容完整"
+    },
+    {
+      "type": "response.audio_transcript.delta",
+      "event_id": "event_17",
+      "response_id": "resp_000002",
+      "item_id": "item_000003",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "性。这"
+    },
+    {
+      "type": "response.audio_transcript.delta",
+      "event_id": "event_18",
+      "response_id": "resp_000002",
+      "item_id": "item_000003",
+      "output_index": 0,
+      "content_index": 0,
+      "delta": "是一段合成的语音回放"
+    },
+    {
+      "type": "response.audio_transcript.done",
+      "event_id": "event_310",
+      "response_id": "resp_000002",
+      "item_id": "item_000003",
+      "output_index": 0,
+      "content_index": 0,
+      "transcript": "这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放"
+    },
+    {
+      "type": "response.output_item.done",
+      "event_id": "event_312",
+      "response_id": "resp_000002",
+      "output_index": 0,
+      "item": {
+        "id": "item_000003",
+        "object": "realtime.item",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "audio",
+            "transcript": "这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放"
+          }
+        ]
+      }
+    },
+    {
+      "type": "response.done",
+      "event_id": "event_314",
+      "response": {
+        "id": "resp_000002",
+        "object": "realtime.response",
+        "status": "completed",
+        "status_details": null,
+        "output": [
+          {
+            "id": "item_000003",
+            "object": "realtime.item",
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+              {
+                "type": "audio",
+                "transcript": "这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放"
+              }
+            ]
+          }
+        ],
+        "usage": null
+      }
+    }
+  ],
+  "text": "这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放测试文本，用于检查分段接收、最终转写补全与会话结束后的内容完整性。这是一段合成的语音回放"
+}

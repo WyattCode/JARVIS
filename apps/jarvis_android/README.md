@@ -1,6 +1,6 @@
 # JARVIS clients
 
-- **Android (Flutter), 0.4.62+94:** [Android build and release notes](ANDROID.md).
+- **Android (Flutter), source 0.4.68+100:** [Android build and release notes](ANDROID.md).
 - **iOS (native Swift):** the existing native client and instructions below remain current.
 
 # JARVIS app (iOS, Swift)

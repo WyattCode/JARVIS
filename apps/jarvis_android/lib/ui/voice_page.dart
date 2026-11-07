@@ -591,7 +591,7 @@ class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
                                       (v.held || c.settings.voiceMode == 'vad')
                                 ? ReactorMode.listening
                                 : ReactorMode.idle,
-                            onTap: v.interrupt,
+                            onTap: () => v.interrupt(source: 'orb_tap'),
                             waveform: AudioWaveform(levels: v.levels),
                             transcript: transcript(),
                           ),
