@@ -111,12 +111,16 @@ class NativeAudioDevice extends AudioDevice {
     if (_warming && _warm.length < 8640) return;
     _warming = false;
     final bytes = _warm.takeBytes(), epoch = _epoch;
-    _output = _output.then((_) async {
+    final pending = _output.then((_) async {
       if (epoch == _epoch) {
         await _method.invokeMethod('feed', {'epoch': epoch, 'bytes': bytes});
       }
     });
-    await _output;
+    // Report this write's failure to its caller, while leaving the serialization
+    // tail usable. Otherwise one platform error prevents every subsequent feed
+    // from even reaching the native player, including audio in a later call.
+    _output = pending.catchError((Object _) {});
+    await pending;
   }
 
   @override
@@ -161,6 +165,8 @@ class NativeAudioDevice extends AudioDevice {
   Future<void> stop() async {
     _epoch++;
     _warm.clear();
+    _warming = true;
+    _output = Future.value();
     await _capture?.cancel();
     _capture = null;
     try {

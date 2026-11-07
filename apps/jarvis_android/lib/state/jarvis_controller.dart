@@ -36,7 +36,7 @@ class JarvisController extends ChangeNotifier {
     catalog: () => models,
     refreshCatalog: refreshVoiceCatalog,
     isConversationAvailable: (c) => authenticated && conversations.contains(c),
-    effort: () => effort,
+    effort: () => voiceEffort,
     model: () => model,
     changed: () {
       scheduleSave();
@@ -76,6 +76,22 @@ class JarvisController extends ChangeNotifier {
   String? selectedId;
   String model = '';
   String effort = 'high';
+  String get voiceEffort {
+    if (settings.voiceEffort.isNotEmpty) return settings.voiceEffort;
+    final chat = models.where((m) => m.id == model).firstOrNull;
+    final policy = chat?.metadata['jarvis'];
+    final defaults = policy is Map ? policy['voice_defaults'] : null;
+    final value = defaults is Map ? defaults['reasoning_effort'] : null;
+    return ['none', 'low', 'medium', 'high'].contains(value)
+        ? value as String
+        : 'low';
+  }
+
+  void setVoiceEffort(String value) {
+    if (!['', 'none', 'low', 'medium', 'high'].contains(value)) return;
+    changeSettings((s) => s.voiceEffort = value);
+  }
+
   String theme = 'dark';
   bool initialized = false, authenticated = false, connecting = false;
   String? error;
@@ -416,8 +432,6 @@ class JarvisController extends ChangeNotifier {
       return;
     }
     effort = value;
-    _voice?.cancelHold();
-    _voice?.updateSettings();
     scheduleSave();
     _changed();
   }
@@ -432,7 +446,7 @@ class JarvisController extends ChangeNotifier {
   void cancel(String id) {
     final m = _active.remove(id);
     if (m == null && _voice?.conversationId == id) {
-      unawaited(_voice!.interrupt());
+      unawaited(_voice!.interrupt(source: 'conversation_cancel'));
       return;
     }
     if (m != null) {
@@ -629,7 +643,7 @@ class JarvisController extends ChangeNotifier {
       if (_voice?.active == true &&
           (previousSpeech != settings.speechModel ||
               previousVoice != settings.voices[settings.speechModel])) {
-        unawaited(_voice!.interrupt());
+        unawaited(_voice!.interrupt(source: 'voice_setting_changed'));
       }
       _voice?.cancelHold();
       if (_voice?.previewing == true) unawaited(_voice!.stopPreview());
@@ -710,7 +724,7 @@ class JarvisController extends ChangeNotifier {
       {
         'role': 'system',
         'content':
-            '你是贾维斯。用户用什么语言交流，就使用同一种语言回答。工具任务回执不是新用户输入，不要因此插话或切换语言。${(instruction ?? settings.instructions).isEmpty ? '' : '\n${instruction ?? settings.instructions}'}',
+            '你是贾维斯。标为【未完成回复】的历史只是中断片段，不要模仿半句结束；当前回复应完整表达，历史状态标记无需朗读。用户用什么语言交流，就使用同一种语言回答。工具任务回执不是新用户输入，不要因此插话或切换语言。${(instruction ?? settings.instructions).isEmpty ? '' : '\n${instruction ?? settings.instructions}'}',
       },
     ];
     var imageBytes = 0, textChars = 0;
@@ -749,7 +763,7 @@ class JarvisController extends ChangeNotifier {
           (m.text.isNotEmpty || m.calls.isNotEmpty)) {
         out.add({
           'role': 'assistant',
-          'content': m.text.isEmpty ? null : m.text,
+          'content': m.text.isEmpty ? null : m.status == 'complete' ? m.text : '【未完成回复】\n${m.text}',
           if (m.calls.isNotEmpty)
             'tool_calls': m.calls.map((c) => c.toJson()).toList(),
         });

@@ -122,7 +122,7 @@ class VoiceHarness {
   int changes = 0;
   final jobs = <Map<String, dynamic>>[];
   late final VoiceSession session;
-  VoiceHarness() {
+  VoiceHarness({void Function(Map<String, dynamic>)? traceEvent}) {
     settings.speechModel = 'speech';
     settings.voices['speech'] = 'Atlas';
     session = VoiceSession(
@@ -157,6 +157,7 @@ class VoiceHarness {
       },
       onTask: (owner, e) => jobs.add(e),
       now: () => time,
+      traceEvent: traceEvent,
     );
   }
   FakeWire get wire => api.wires.last;

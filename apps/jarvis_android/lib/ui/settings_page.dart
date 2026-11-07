@@ -372,6 +372,18 @@ class _SettingsPageState extends State<SettingsPage> {
         sectionKey: sectionKeys[2],
         title: '音色',
         children: [
+          PickerRow<String>(
+            label: '语音思考强度',
+            value: s.voiceEffort,
+            options: const [
+              ('', '跟随服务端'),
+              ('none', '关闭'),
+              ('low', '低'),
+              ('medium', '中'),
+              ('high', '高'),
+            ],
+            onSelected: c.setVoiceEffort,
+          ),
           if (speech.isEmpty)
             const Padding(
               padding: EdgeInsets.all(16),

@@ -33,7 +33,7 @@ void main() {
     expect(h.session.expressing, true);
     h.audio.output.add({'type': 'playback', 'active': true});
     h.audio.output.add({'type': 'playback', 'active': false});
-    expect(h.session.status, '正在回复');
+    expect(h.session.status, '正在准备语音');
     expect(h.session.expressing, true);
     h.event({
       'type': 'response.done',
