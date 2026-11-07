@@ -6,7 +6,7 @@ import UIKit
 /// turn's words under them; below, one row with minimize, the voice and hang-up, the mode chooser, the talk button and the
 /// row of generated works.
 @MainActor
-final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
+final class CallViewController: UIViewController, UIGestureRecognizerDelegate, UIScrollViewDelegate {
   /// Every way up (see the root page): a page shown over it must not take the upside-down turn away again.
   override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .all }
   private let store: JarvisStore
@@ -22,7 +22,28 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
   private let turns = UIStackView()
   private let youPill = UIView()
   private let youLabel = UILabel()
-  private let botLabel = UILabel()
+  /// JARVIS's words, with the sentence being said marked (see `SpokenTextView`).
+  private let botView = SpokenTextView()
+  /// The words are brought to the sentence being said; for a few seconds after a hand has moved them they are left alone.
+  private var handMovedTranscript = Date.distantPast
+  private let transcriptFade = CAGradientLayer()
+  /// The voice is saying the reply, or stopped in it: the words are brought to the line it is on.
+  private var followsVoice = false
+  /// Moves the lit edge 30 times a second while the voice goes (the player reports every 50 ms, and not at all while it plays
+  /// silence).
+  private var readingTimer: Timer?
+  private var fadeSignature = ""
+  #if DEBUG
+    /// JARVIS_CALL_DEMO=1: a short reply; =read: a long one (twice over) read out over 80 s (the edge moves and the words
+    /// follow it); =cut: the same reply cut off 52 s in (the lit part stays where the voice stopped).
+    private static let demoMode: String = {
+      let mode = ProcessInfo.processInfo.environment["JARVIS_CALL_DEMO"] ?? ""
+      return ["1", "read", "cut"].contains(mode) ? mode : ""
+    }()
+    private let demoStarted = Date()
+    private static let demoReply =
+      "这个问题挺有意思的，得分两层看。第一层是**可观测宇宙**，也就是光从大爆炸到现在来得及传给我们那部分。它的直径大约是930亿光年。这个数字看着矛盾——宇宙才138亿岁，怎么能有930亿光年？因为空间本身在膨胀，远处的光走过的路被空间拉伸得比138亿年还长。第二层是**整个宇宙**，这个就没人知道了。它可能是可观测范围之外还有一大块，也可能是完全无限大。目前的观测数据只能告诉我们：在我们能看到的范围内，空间几乎是平直的，而平直的空间往往意味着要么无限大，要么大到我们根本测不出它的弯曲。所以老实说，930亿光年这个数我们比较确定，但宇宙真正的边界在哪，到现在还是个没解开的谜。你是对哪部分更感兴趣，膨胀的速度，还是它到底有没有边？"
+  #endif
   private let recover = UIButton(type: .system)
   private let controls: NativeCallControls
   private let minimizeButton = UIButton(type: .system)
@@ -129,6 +150,21 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
     // plain on the left.
     transcript.alwaysBounceVertical = false
     transcript.showsVerticalScrollIndicator = false
+    transcript.delegate = self
+    botView.onLine = { [weak self] rect in
+      // Not now: this comes from inside a layout pass, which the follow would start again.
+      DispatchQueue.main.async { [weak self] in
+        guard let self, self.followsVoice else { return }
+        self.follow(rect)
+      }
+    }
+    // The text fades out at an edge it continues past (and not at one it ends at). The mask is a little wider than the page
+    // so that the glow of the lit characters is not cut at its sides.
+    transcript.clipsToBounds = false
+    transcriptFade.colors = [UIColor.clear.cgColor, UIColor.black.cgColor, UIColor.black.cgColor, UIColor.clear.cgColor]
+    transcriptFade.startPoint = CGPoint(x: 0.5, y: 0)
+    transcriptFade.endPoint = CGPoint(x: 0.5, y: 1)
+    transcript.layer.mask = transcriptFade
     transcript.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(transcript)
     youLabel.numberOfLines = 0
@@ -145,13 +181,13 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
     youPill.addSubview(youLabel)
     let youRow = UIView()
     youRow.addSubview(youPill)
-    botLabel.numberOfLines = 0
+    botView.translatesAutoresizingMaskIntoConstraints = false
     turns.axis = .vertical
     turns.spacing = 20
     turns.alignment = .fill
     turns.translatesAutoresizingMaskIntoConstraints = false
     turns.addArrangedSubview(youRow)
-    turns.addArrangedSubview(botLabel)
+    turns.addArrangedSubview(botView)
     transcript.addSubview(turns)
     NSLayoutConstraint.activate([
       youLabel.topAnchor.constraint(equalTo: youPill.topAnchor, constant: 14), youLabel.bottomAnchor.constraint(equalTo: youPill.bottomAnchor, constant: -14),
@@ -326,6 +362,7 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
 
   override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
+    updateFade()
     // A turn between upright and sideways changes the bar without changing the traits.
     let kind = hasVerticalBar(traitCollection) ? 1 : 2
     let short = view.bounds.height < 520 && strip && isStraightPhone(view)
@@ -579,22 +616,16 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
     youLabel.attributedText = NSAttributedString(
       string: voice.lastYou, attributes: [.font: UIFont.systemFont(ofSize: size), .foregroundColor: Palette.onSurface])
     youPill.superview?.isHidden = voice.lastYou.isEmpty
-    botLabel.attributedText = NSAttributedString(
-      string: voice.lastBot, attributes: [.font: UIFont.systemFont(ofSize: size), .foregroundColor: Palette.onSurface, .paragraphStyle: { () -> NSMutableParagraphStyle in
-        let p = NSMutableParagraphStyle(); p.lineSpacing = 4; return p }()])
-    botLabel.isHidden = voice.lastBot.isEmpty
     #if DEBUG
-      if ProcessInfo.processInfo.environment["JARVIS_CALL_DEMO"] == "1" {
+      if Self.demoMode != "" {
         youLabel.attributedText = NSAttributedString(
           string: "你好你好你好", attributes: [.font: UIFont.systemFont(ofSize: size), .foregroundColor: Palette.onSurface])
         youPill.superview?.isHidden = false
-        botLabel.attributedText = NSAttributedString(
-          string: "你好！我在这里，随时可以帮你。今天想聊点什么？可以问我问题，也可以让我帮你整理想法。",
-          attributes: [.font: UIFont.systemFont(ofSize: size + 1), .foregroundColor: Palette.onSurface])
-        botLabel.isHidden = false
         if strip, !conversing { setStage(conversing: true, animated: false) }
       }
     #endif
+    updateReading()
+    updateFade()
     if voice.lastYou != lastYou {
       lastYou = voice.lastYou
       transcript.setContentOffset(.zero, animated: false)
@@ -614,6 +645,88 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate {
     // The call ended (hung up, or the session closed): the page goes with it.
     if sawCall && !voice.open && !voice.active && !voice.starting && !voice.needsRecovery { closePage() }
   }
+
+  /// JARVIS's words, lit as far as the voice has got (see `SpokenTextView`).
+  private func updateReading() {
+    var text = voice.lastBot
+    var size = store.settings.messageFontSize
+    var progress = voice.speechProgress
+    #if DEBUG
+      if Self.demoMode != "" {
+        text = "你好！我在这里，随时可以帮你。今天想聊点什么？可以问我问题，也可以让我帮你整理想法。"
+        size += 1
+        progress = nil
+        if Self.demoMode == "read" || Self.demoMode == "cut" {
+          text = Self.demoReply + "\n\n" + Self.demoReply
+          size = store.settings.messageFontSize * 1.8
+          let played = Self.demoMode == "cut" ? 52 : min(Date().timeIntervalSince(demoStarted), 80)
+          progress = SpeechProgress(played: played, total: 80, pace: 0.2, live: Self.demoMode == "read" && played < 80, cut: Self.demoMode == "cut")
+        }
+      }
+    #endif
+    botView.isHidden = text.isEmpty
+    followsVoice = progress?.live == true || progress?.cut == true
+    botView.show(text, size: size, progress: progress)
+    if progress != nil { voice.traceReading(raw: botView.estimated, shown: botView.shown, characters: botView.characterCount) }
+    if progress?.live == true { startReading() } else { stopReading() }
+  }
+
+  private func startReading() {
+    guard readingTimer == nil else { return }
+    let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
+      guard let self else { return timer.invalidate() }
+      self.updateReading()
+    }
+    RunLoop.main.add(timer, forMode: .common)
+    readingTimer = timer
+  }
+
+  private func stopReading() {
+    readingTimer?.invalidate()
+    readingTimer = nil
+  }
+
+  override func viewDidDisappear(_ animated: Bool) {
+    super.viewDidDisappear(animated)
+    stopReading()
+  }
+
+  /// Brings the line the voice is on to about a quarter of the way down the words, a line at a time, unless a hand has just
+  /// moved them (then the words are left to be read where they are, and the next line after a pause takes them back).
+  private func follow(_ mark: CGRect) {
+    guard Date().timeIntervalSince(handMovedTranscript) > 3, !transcript.isTracking, !transcript.isDragging, !transcript.isDecelerating
+    else { return }
+    transcript.layoutIfNeeded()
+    let area = transcript.convert(mark, from: botView)
+    let height = transcript.bounds.height
+    let farthest = max(0, transcript.contentSize.height - height)
+    let target = min(max(area.minY - height * 0.25, 0), farthest)
+    if abs(target - transcript.contentOffset.y) > 2 { transcript.setContentOffset(CGPoint(x: 0, y: target), animated: true) }
+  }
+
+  /// The words fade where they go on past the edge of the area: at the top once they are scrolled, at the bottom while there is
+  /// more below.
+  private func updateFade() {
+    let height = transcript.bounds.height
+    guard height > 0 else { return }
+    let offset = transcript.contentOffset.y
+    let farthest = max(0, transcript.contentSize.height - height)
+    let top = min(28, max(0, offset))
+    let bottom = min(28, max(0, farthest - offset))
+    let signature = "\(Int(offset.rounded()))/\(Int(height))/\(Int(top))/\(Int(bottom))/\(Int(transcript.bounds.width))"
+    if signature == fadeSignature { return }
+    fadeSignature = signature
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    transcriptFade.frame = CGRect(x: -8, y: offset, width: transcript.bounds.width + 16, height: height)
+    transcriptFade.locations = [0, NSNumber(value: top / height), NSNumber(value: 1 - bottom / height), 1]
+    CATransaction.commit()
+  }
+
+  func scrollViewDidScroll(_ scrollView: UIScrollView) { if scrollView === transcript { updateFade() } }
+  func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { handMovedTranscript = Date() }
+  func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) { handMovedTranscript = Date() }
+  func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { handMovedTranscript = Date() }
 
   private func voiceName() -> String {
     let id = voice.voice

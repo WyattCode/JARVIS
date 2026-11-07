@@ -33,6 +33,7 @@
 		5E7A91C3D2B4406F8A1E7DE7 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7DE6 /* Models.swift */; };
 		5E7A91C3D2B4406F8A1E7DE9 /* SSE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7DE8 /* SSE.swift */; };
 		5E7A91C3D2B4406F8A1E7DEB /* TextClip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7DEA /* TextClip.swift */; };
+		5E7A91C3D2B4406F8A1E7D03 /* SpokenText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7D02 /* SpokenText.swift */; };
 		5E7A91C3D2B4406F08A68C86 /* OuterColumns.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406FC638332A /* OuterColumns.swift */; };
 		5E7A91C3D2B4406FA8BCBE8D /* ModelOrder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406FD808A807 /* ModelOrder.swift */; };
 		5E7A91C3D2B4406FF5DC17C5 /* DockMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F81657ADF /* DockMemory.swift */; };
@@ -68,6 +69,8 @@
 		5E7A91C3D2B4406F8A1E7C81 /* NativeMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7C80 /* NativeMarkdown.swift */; };
 		5E7A91C3D2B4406F8A1E7C91 /* NativeMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7C90 /* NativeMessages.swift */; };
 		5E7A91C3D2B4406F8A1E7CA1 /* NativeCallControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7CA0 /* NativeCallControls.swift */; };
+		5E7A91C3D2B4406F8A1E7D01 /* CallSpeechText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7D00 /* CallSpeechText.swift */; };
+		5E7A91C3D2B4406F8A1E7D05 /* SpeechTraceFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7D04 /* SpeechTraceFile.swift */; };
 		5E7A91C3D2B4406F8A1E7CB1 /* NativeReactor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7CB0 /* NativeReactor.swift */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
@@ -123,6 +126,7 @@
 		5E7A91C3D2B4406F8A1E7DE6 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Models.swift; path = JarvisCore/Sources/JarvisCore/Models.swift; sourceTree = SOURCE_ROOT; };
 		5E7A91C3D2B4406F8A1E7DE8 /* SSE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SSE.swift; path = JarvisCore/Sources/JarvisCore/SSE.swift; sourceTree = SOURCE_ROOT; };
 		5E7A91C3D2B4406F8A1E7DEA /* TextClip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TextClip.swift; path = JarvisCore/Sources/JarvisCore/TextClip.swift; sourceTree = SOURCE_ROOT; };
+		5E7A91C3D2B4406F8A1E7D02 /* SpokenText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SpokenText.swift; path = JarvisCore/Sources/JarvisCore/SpokenText.swift; sourceTree = SOURCE_ROOT; };
 		5E7A91C3D2B4406FC638332A /* OuterColumns.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OuterColumns.swift; path = JarvisCore/Sources/JarvisCore/OuterColumns.swift; sourceTree = SOURCE_ROOT; };
 		5E7A91C3D2B4406FD808A807 /* ModelOrder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ModelOrder.swift; path = JarvisCore/Sources/JarvisCore/ModelOrder.swift; sourceTree = SOURCE_ROOT; };
 		5E7A91C3D2B4406F81657ADF /* DockMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockMemory.swift; path = JarvisCore/Sources/JarvisCore/DockMemory.swift; sourceTree = SOURCE_ROOT; };
@@ -158,6 +162,8 @@
 		5E7A91C3D2B4406F8A1E7C80 /* NativeMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdown.swift; sourceTree = "<group>"; };
 		5E7A91C3D2B4406F8A1E7C90 /* NativeMessages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMessages.swift; sourceTree = "<group>"; };
 		5E7A91C3D2B4406F8A1E7CA0 /* NativeCallControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCallControls.swift; sourceTree = "<group>"; };
+		5E7A91C3D2B4406F8A1E7D00 /* CallSpeechText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallSpeechText.swift; sourceTree = "<group>"; };
+		5E7A91C3D2B4406F8A1E7D04 /* SpeechTraceFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechTraceFile.swift; sourceTree = "<group>"; };
 		5E7A91C3D2B4406F8A1E7CB0 /* NativeReactor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeReactor.swift; sourceTree = "<group>"; };
 		331C807B294A618700263BE5 /* RunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerTests.swift; sourceTree = "<group>"; };
 		331C8081294A63A400263BE5 /* RunnerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RunnerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -242,6 +248,7 @@
 				5E7A91C3D2B4406F8A1E7DE6 /* Models.swift */,
 				5E7A91C3D2B4406F8A1E7DE8 /* SSE.swift */,
 				5E7A91C3D2B4406F8A1E7DEA /* TextClip.swift */,
+				5E7A91C3D2B4406F8A1E7D02 /* SpokenText.swift */,
 				5E7A91C3D2B4406FC638332A /* OuterColumns.swift */,
 				5E7A91C3D2B4406FD808A807 /* ModelOrder.swift */,
 				5E7A91C3D2B4406F81657ADF /* DockMemory.swift */,
@@ -277,6 +284,8 @@
 				5E7A91C3D2B4406F8A1E7C80 /* NativeMarkdown.swift */,
 				5E7A91C3D2B4406F8A1E7C90 /* NativeMessages.swift */,
 				5E7A91C3D2B4406F8A1E7CA0 /* NativeCallControls.swift */,
+				5E7A91C3D2B4406F8A1E7D00 /* CallSpeechText.swift */,
+				5E7A91C3D2B4406F8A1E7D04 /* SpeechTraceFile.swift */,
 				5E7A91C3D2B4406F8A1E7CB0 /* NativeReactor.swift */,
 				E60F6D9D7423BA587B66E6B0 /* AudioBridge.swift */,
 				7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */,
@@ -427,6 +436,7 @@
 				5E7A91C3D2B4406F8A1E7DE7 /* Models.swift in Sources */,
 				5E7A91C3D2B4406F8A1E7DE9 /* SSE.swift in Sources */,
 				5E7A91C3D2B4406F8A1E7DEB /* TextClip.swift in Sources */,
+				5E7A91C3D2B4406F8A1E7D03 /* SpokenText.swift in Sources */,
 				5E7A91C3D2B4406F08A68C86 /* OuterColumns.swift in Sources */,
 				5E7A91C3D2B4406FA8BCBE8D /* ModelOrder.swift in Sources */,
 				5E7A91C3D2B4406FF5DC17C5 /* DockMemory.swift in Sources */,
@@ -462,6 +472,8 @@
 				5E7A91C3D2B4406F8A1E7C81 /* NativeMarkdown.swift in Sources */,
 				5E7A91C3D2B4406F8A1E7C91 /* NativeMessages.swift in Sources */,
 				5E7A91C3D2B4406F8A1E7CA1 /* NativeCallControls.swift in Sources */,
+				5E7A91C3D2B4406F8A1E7D01 /* CallSpeechText.swift in Sources */,
+				5E7A91C3D2B4406F8A1E7D05 /* SpeechTraceFile.swift in Sources */,
 				5E7A91C3D2B4406F8A1E7CB1 /* NativeReactor.swift in Sources */,
 				DFCFDD771059EE6D4B83BE7B /* AudioBridge.swift in Sources */,
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
@@ -557,7 +569,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 44;
+				CURRENT_PROJECT_VERSION = 45;
 				MARKETING_VERSION = 0.4.6;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -738,7 +750,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 44;
+				CURRENT_PROJECT_VERSION = 45;
 				MARKETING_VERSION = 0.4.6;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -761,7 +773,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 44;
+				CURRENT_PROJECT_VERSION = 45;
 				MARKETING_VERSION = 0.4.6;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;

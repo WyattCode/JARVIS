@@ -85,6 +85,41 @@ public final class VoiceSession: ObservableObject, VoiceHost {
   public private(set) var receivedPcmBytes = 0
   public private(set) var bufferedFrames = 0
   public private(set) var playbackRate = 24000
+  /// Audio of the reply in flight: bytes received, whether the player has started on it, whether all of it has arrived and,
+  /// when it was cut off while being said, how far it had got. They let the call page follow the voice through the words.
+  private var replyAudioBytes = 0
+  /// Finds the rests in this reply's sound, for the trace (see `SoundRests`).
+  private var replyRests = SoundRests(rate: 24000)
+  private var replyPlaying = false
+  private var replyAudioDone = false
+  /// The sound said its end (an end marker) and no more sound has come since, and the reply itself has ended.
+  private var replyMarkerSeen = false
+  private var replyEnded = false
+  /// The pace this reply's sound turned out to have, taken on by the next reply once this one is over.
+  private var replyMeasuredPace: Double?
+  private var replyCutAt: Double?
+  /// Seconds one spoken character took in the last reply of this call: the next reply is laid out with it until its own audio
+  /// is all here.
+  private var speechPace = SpokenText.defaultPace
+  private var speechPaceKnown = false
+  /// Where the pace of each voice is kept between calls (a voice's speed is the same from one call to the next, and the first
+  /// reply of a call is the one that has nothing else to go by).
+  public var paceDefaults: UserDefaults = .standard
+  /// The reply ended with the server saying it failed: where the sound stopped is where the words stopped being said.
+  private var replyFailed = false
+  /// What happened to the sound and the words of the replies, line by line (times from the reply's start, no words, only
+  /// counts), for finding out why the lit part of the words went where it did. The last lines are in the diagnostics.
+  public private(set) var speechTrace: [String] = []
+  /// Told every line as it is written (the app keeps them in a file).
+  public var traceSink: ((String) -> Void)?
+  private var traceTextAt = Date.distantPast
+  private var traceAudioAt = Date.distantPast
+  private var traceSampleAt = Date.distantPast
+  private var traceTextLength = 0
+  /// When the server last said anything at all, and when the heartbeat of the trace last ran.
+  private var lastWireEventAt = Date.distantPast
+  private var lastBeatAt = Date.distantPast
+  private let heartbeat = Delay()
 
   private var wire: RealtimeWire?
   private var wireReader: Task<Void, Never>?
@@ -413,6 +448,10 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     receivedPcmBytes = 0
     bufferedFrames = 0
     playbackRate = 24000
+    resetReplyAudio()
+    loadSpeechPace()
+    speechTrace = []
+    trace("=== call start")
     error = nil
     lastYou = ""
     lastBot = ""
@@ -663,6 +702,138 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     }
   }
 
+  private func trace(_ line: String) {
+    let t = replyStartedAt.map { now().timeIntervalSince($0) } ?? 0
+    let text = String(format: "%7.2f ", t) + line
+    speechTrace.append(text)
+    if speechTrace.count > 400 { speechTrace.removeFirst(100) }
+    traceSink?(text)
+  }
+
+  /// Where the words say the voice rests at the end of a sentence, to be set against the "rest in the sound" lines that follow.
+  private func traceModelRests() {
+    let rests = SpokenText(lastBot).sentenceRests(pace: speechPace)
+    guard !rests.isEmpty else { return }
+    let list = rests.prefix(40).map { String(format: "%.1f+%.1f", $0.at, $0.length) }.joined(separator: " ")
+    trace(String(format: "words say the voice rests (pace %.3f) at: ", speechPace) + list)
+  }
+
+  /// While a reply is being made, once a second: how long the server has said nothing, and whether this check itself came late.
+  /// A silent server and a phone too busy to listen look the same from the sound alone; they do not look the same here.
+  private func armHeartbeat() {
+    heartbeat.start(1) { [weak self] in
+      guard let self, self.wanted else { return }
+      let t = self.now()
+      let late = t.timeIntervalSince(self.lastBeatAt) - 1
+      let silent = t.timeIntervalSince(self.lastWireEventAt)
+      let waiting = self.response != nil
+      if (waiting && silent >= 2) || late >= 0.5 {
+        let rate = Double(max(self.playbackRate, 1))
+        self.trace(String(format: "heartbeat: server silent for %.1fs (reply %@), this check ran %.1fs late, player holds %.2fs, %.2fs waits to be handed over",
+          silent, waiting ? "still being made" : "over", max(late, 0), Double(self.bufferedFrames) / rate, Double(self.queuedBytes) / 2 / rate))
+      }
+      self.lastBeatAt = t
+      if waiting || self.speaking || self.queuedBytes > 0 { self.armHeartbeat() }
+    }
+  }
+
+  /// The last four characters of an id: enough to tell replies and items apart in the trace.
+  private func tag(_ id: String?) -> String { id.map { String($0.suffix(4)) } ?? "-" }
+
+  /// The call page tells where it has drawn the lit edge (at most twice a second), next to what the call knows.
+  public func traceReading(raw: Double?, shown: Double?, characters: Int) {
+    guard now().timeIntervalSince(traceSampleAt) >= 0.5 else { return }
+    traceSampleAt = now()
+    let rate = Double(max(playbackRate, 1))
+    let progress = speechProgress
+    trace(String(format: "edge shown=%@ estimated=%@ of %d chars | played=%.2fs total=%@ pace=%.3f live=%@ cut=%@ | queued=%.2fs buffered=%.2fs",
+      shown.map { String(format: "%.1f", $0) } ?? "-", raw.map { String(format: "%.1f", $0) } ?? "-", characters,
+      progress?.played ?? 0, progress?.total.map { String(format: "%.2fs", $0) } ?? "-", progress?.pace ?? speechPace,
+      progress?.live == true ? "yes" : "no", progress?.cut == true ? "yes" : "no", Double(queuedBytes) / 2 / rate, Double(bufferedFrames) / rate))
+  }
+
+  private func resetReplyAudio() {
+    replyAudioBytes = 0
+    replyRests = SoundRests(rate: playbackRate)
+    replyPlaying = false
+    replyAudioDone = false
+    replyMarkerSeen = false
+    replyEnded = false
+    replyFailed = false
+    replyMeasuredPace = nil
+    replyCutAt = nil
+  }
+
+  /// Seconds of the reply's audio the player has got through: what arrived, less what still waits to be handed over and what
+  /// the player holds. (The pre-roll the player keeps back for its first 0.18 s counts as played; the error is that small.)
+  private var replyPlayedSeconds: Double {
+    guard replyPlaying else { return 0 }
+    let waiting = Double(queuedBytes) / 2 + Double(bufferedFrames)
+    return max(0, Double(replyAudioBytes) / 2 - waiting) / Double(max(playbackRate, 1))
+  }
+
+  /// All of the reply's sound is here: its length is known now, which says how fast this voice speaks. That is only taken to
+  /// be so when the reply has ended and the sound has marked its end after the last of it: a marker that comes in the middle
+  /// of the reply ends a part (a paragraph) and says nothing about how long the whole is.
+  private func noteReplyAudioComplete() {
+    guard replyAudioBytes > 0, !replyAudioDone, replyMarkerSeen, replyEnded else { return }
+    replyAudioDone = true
+    let seconds = Double(replyAudioBytes) / 2 / Double(max(playbackRate, 1))
+    let words = SpokenText(lastBot)
+    let measured = words.pace(forTotal: seconds)
+    replyMeasuredPace = measured
+    trace(String(format: "all sound taken as arrived: %.2fs for %d chars, measured pace %.3f (carried pace %.3f)", seconds, words.clusters.count, measured, speechPace))
+  }
+
+  /// What the last reply showed of this voice's speed is the starting point for the next one, and for the next call.
+  private func adoptMeasuredPace() {
+    guard let measured = replyMeasuredPace else { return }
+    speechPace = speechPaceKnown ? speechPace * 0.4 + measured * 0.6 : measured
+    speechPaceKnown = true
+    replyMeasuredPace = nil
+    paceDefaults.set(speechPace, forKey: paceKey)
+  }
+
+  /// Seconds one spoken character is taken to last until the sound of the reply says otherwise.
+  public var carriedSpeechPace: Double { speechPace }
+
+  private var paceKey: String { "speechPace.\(store.settings.speechModel).\(voice)" }
+
+  private func loadSpeechPace() {
+    let saved = paceDefaults.double(forKey: paceKey)
+    if SpokenText.paceRange.contains(saved) {
+      speechPace = saved
+      speechPaceKnown = true
+    } else {
+      speechPace = SpokenText.defaultPace
+      speechPaceKnown = false
+    }
+  }
+
+  /// A reply cut off while it was being said keeps the place it had reached, for the page to show where the voice stopped.
+  private func markSpeechCut() {
+    guard replyCutAt == nil, replyPlaying, speaking || queuedBytes > 0 else { return }
+    replyCutAt = replyPlayedSeconds
+  }
+
+  /// Where the voice is in the reply the page shows, or nil when there is nothing to follow (no sound yet, a voice preview).
+  public var speechProgress: SpeechProgress? {
+    guard !previewing, replyAudioBytes > 0, !lastBot.isEmpty else { return nil }
+    if let cut = replyCutAt { return SpeechProgress(played: cut, total: nil, pace: speechPace, live: false, cut: true) }
+    guard replyPlaying else { return nil }
+    let sounding = speaking || queuedBytes > 0
+    // A reply the server failed stops being said part way: the words keep the mark where the sound ran out, so it shows how far
+    // the reply was said (and not, as plain text would, that all of it was).
+    if replyFailed, !sounding { return SpeechProgress(played: replyPlayedSeconds, total: nil, pace: speechPace, live: false, cut: true) }
+    // The player has run dry while the server is still making the reply: the voice is waiting for more sound, not done. The
+    // mark stays where the sound stopped (it would otherwise turn all the words bright, as if they had all been said, for as
+    // long as the server takes to go on, or to fail).
+    let waiting = response != nil && !replyEnded && !replyFailed
+    let live = sounding || waiting
+    let total = replyAudioDone ? Double(replyAudioBytes) / 2 / Double(max(playbackRate, 1)) : nil
+    return SpeechProgress(played: replyPlayedSeconds, total: total, pace: speechPace, live: live, cut: false)
+  }
+
   private func input(_ bytes: Data) {
     if !wanted { return }
     if settingsDeferred { applyDeferredSettings() }
@@ -684,9 +855,11 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       bufferedFrames = e["buffered_frames"]?.int ?? 0
       playbackRate = e["sample_rate"]?.int ?? 24000
       let active = e["active"]?.bool == true
+      if active, replyAudioBytes > 0, replyCutAt == nil { replyPlaying = true }
       let rms = e["rms"]?.double ?? 0
       setLevels(output: active && !previewing && rms.isFinite ? min(max(rms, 0), 1) : 0, playing: active && !previewing)
       if active != speaking {
+        trace(String(format: "player %@ buffered=%.2fs queued=%.2fs", active ? "started" : "stopped", Double(bufferedFrames) / Double(max(playbackRate, 1)), Double(queuedBytes) / 2 / Double(max(playbackRate, 1))))
         speaking = active
         if !active { applyDeferredSettings() }
         if !active && previewing {
@@ -728,6 +901,8 @@ public final class VoiceSession: ObservableObject, VoiceHost {
 
   public func interrupt() async {
     if playbackPaused { playbackPaused = false; await audio.setPaused(false) }
+    markSpeechCut()
+    trace(String(format: "interrupt: played=%.2fs cut=%@", replyPlayedSeconds, replyCutAt.map { String(format: "%.2fs", $0) } ?? "no"))
     audioEpoch += 1
     speechOpen = false
     speechWatch.cancel()
@@ -837,6 +1012,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
   // MARK: What the server says
 
   func handle(_ e: [String: JSONValue]) {
+    lastWireEventAt = now()
     let type = e["type"]?.string ?? ""
     let id = e["item_id"]?.string
     let responseId = e["response_id"]?.string ?? e["response"]?["id"]?.string
@@ -922,7 +1098,15 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       lastBotItem = nil
       speechOpen = false
       speechWatch.cancel()
+      adoptMeasuredPace()
       replyStartedAt = now()
+      resetReplyAudio()
+      traceTextAt = .distantPast
+      traceAudioAt = .distantPast
+      traceSampleAt = .distantPast
+      trace("created reply=\(tag(response)) previous-latest=\(tag(latestResponse))")
+      lastBeatAt = now()
+      armHeartbeat()
       replyAudioLogged = false
       playbackEndsAt = nil
       firstAudioWait = nil
@@ -942,6 +1126,11 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       items[id]?.parts[part, default: ""] += delta
       let whole = items[id]?.text ?? ""
       edit(m) { $0.text = whole }
+      if lastBotItem != id || whole.count - traceTextLength >= 40 || now().timeIntervalSince(traceTextAt) > 1 {
+        traceTextAt = now()
+        traceTextLength = whole.count
+        trace("text item=\(tag(id)) part=\(part) len=\(whole.count)\(lastBotItem != id ? " (the page now shows this item)" : "")")
+      }
       lastBot = whole
       lastBotItem = id
       thinking = false
@@ -954,6 +1143,23 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       _ = bot(id, responseId)
       let data = Data(base64Encoded: e["delta"]?.string ?? "") ?? Data()
       receivedPcmBytes += data.count
+      replyAudioBytes += data.count
+      if replyAudioBytes == data.count { traceModelRests() }
+      for rest in replyRests.add(data) { trace(String(format: "rest in the sound at %.2fs for %.2fs", rest.at, rest.length)) }
+      if replyAudioBytes > data.count, let last = lastAudioAt, now().timeIntervalSince(last) >= 2 {
+        trace(String(format: "sound came again after %.1fs without any (the player holds %.2fs)", now().timeIntervalSince(last), Double(bufferedFrames) / Double(max(playbackRate, 1))))
+      }
+      replyMarkerSeen = false
+      if replyAudioDone {
+        // More sound after the end was taken: it was the end of a part, not of the reply's sound.
+        replyAudioDone = false
+        replyMeasuredPace = nil
+        trace("more sound came after its end was taken: the sound is not complete")
+      }
+      if replyAudioBytes == data.count || now().timeIntervalSince(traceAudioAt) >= 0.5 {
+        traceAudioAt = now()
+        trace(String(format: "audio %@ chunk=%.2fs received=%.2fs queued=%.2fs player-buffer=%.2fs", tag(responseId), Double(data.count) / 2 / Double(max(playbackRate, 1)), Double(replyAudioBytes) / 2 / Double(max(playbackRate, 1)), Double(queuedBytes) / 2 / Double(max(playbackRate, 1)), Double(bufferedFrames) / Double(max(playbackRate, 1))))
+      }
       noteAudioArrival(data.count)
       let current = run
       let epoch = audioEpoch
@@ -975,6 +1181,11 @@ public final class VoiceSession: ObservableObject, VoiceHost {
         }
       }
     case "localrouter.response.speech_done", "response.audio.done":
+      trace(String(format: "marker %@ reply=%@ item=%@ part=%@ received=%.2fs text=%d chars", type, tag(responseId), tag(id), e["content_index"]?.int.map(String.init) ?? "-", Double(replyAudioBytes) / 2 / Double(max(playbackRate, 1)), lastBot.count))
+      if responseId == nil || responseId == latestResponse {
+        replyMarkerSeen = true
+        noteReplyAudioComplete()
+      }
       speechOpen = false
       speechWatch.cancel()
       applyDeferredSettings()
@@ -1002,6 +1213,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       hold(id, responseId, part: e["content_index"]?.int ?? 0, text: final ?? "")
     case "response.done":
       let result = e["response"] ?? .object([:])
+      trace(String(format: "response.done reply=%@ status=%@ outputs=%d received=%.2fs text=%d chars", tag(responseId ?? response), result["status"]?.string ?? "-", result["output"]?.array?.count ?? 0, Double(replyAudioBytes) / 2 / Double(max(playbackRate, 1)), lastBot.count))
       // `response.done` of a reply that is not the one in flight (an earlier turn finishing late) closes that reply's own items
       // and leaves the current one alone.
       let closing = responseId ?? response
@@ -1013,6 +1225,11 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       }
       let state = result["status"]?.string
       let completed = state == "completed"
+      if state == "failed", inFlight {
+        replyFailed = true
+        let why = result["status_details"]
+        trace("reply failed: type=\(why?["type"]?.string ?? "-") reason=\(why?["reason"]?.string ?? "-") error=\(why?["error"]?["code"]?.string ?? why?["error"]?["type"]?.string ?? "-") message=\(String((why?["error"]?["message"]?.string ?? "-").prefix(120)))")
+      }
       let mapped = completed ? "complete" : state == "incomplete" ? "length" : "interrupted"
       var listed: Set<String> = []
       for item in result["output"]?.array ?? [] {
@@ -1049,6 +1266,10 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     case "error":
       thinking = false
       let code = e["error"]?["code"]?.string
+      trace("error event: type=\(e["error"]?["type"]?.string ?? "-") code=\(code ?? "-") message=\(String((e["error"]?["message"]?.string ?? "-").prefix(120)))")
+      // The server's word that the speech failed comes just before `response.done`: the mark is kept from this moment, not drawn
+      // plain for the instant between the two.
+      if code == "speech_failed", responseId == nil || responseId == latestResponse || responseId == response { replyFailed = true }
       fail(code == "speech_failed" ? "语音生成失败，文字回复仍可查看" : "语音服务返回错误，请重试当前操作")
     case "localrouter.voice.paused":
       ready = false
@@ -1163,6 +1384,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     items[id] = entry
     let whole = entry.text
     if whole != before {
+      trace("text corrected item=\(tag(id)) part=\(part) len \(before.count) -> \(whole.count)")
       textCorrections += before.isEmpty ? 0 : 1
       edit(entry.messageId) {
         $0.text = whole
@@ -1213,6 +1435,10 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     speechWatch.cancel()
     guard wanted, let wire else { return }
     let drain = state == "completed" || state == "incomplete"
+    if drain, reply == nil || reply == latestResponse {
+      replyEnded = true
+      noteReplyAudioComplete()
+    }
     if drain { watchSpeechEnd(reply) }
     let current = run
     let epoch = audioEpoch
@@ -1229,6 +1455,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     if wire !== lostWire || current != run || !wanted { return }
     wire = nil
     resetLevels()
+    markSpeechCut()
     audioEpoch += 1
     speechWatch.cancel()
     wireReader?.cancel()
@@ -1389,6 +1616,9 @@ public final class VoiceSession: ObservableObject, VoiceHost {
 
   private func stopCall(keepOpen keep: Bool = false) async {
     resetLevels()
+    // What the last reply showed of the voice's speed is kept for the next call.
+    adoptMeasuredPace()
+    heartbeat.cancel()
     if stopping {
       await closing.value
       return

@@ -54,6 +54,7 @@ final class RootContainerViewController: UIViewController, UIGestureRecognizerDe
   init(store: JarvisStore) {
     self.store = store
     voice = VoiceSession(store: store, audio: EngineAudioDevice())
+    voice.traceSink = { SpeechTraceFile.shared.write($0) }
     store.voice = voice
     chat = ChatViewController(store: store, voice: voice)
     nav = UINavigationController(rootViewController: chat)

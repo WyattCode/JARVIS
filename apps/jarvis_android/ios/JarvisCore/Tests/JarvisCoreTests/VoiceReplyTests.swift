@@ -876,4 +876,417 @@ extension VoiceTests {
     await pause(0.45)
     XCTAssertEqual(audio.finishes, 0, "what was cut is not played out")
   }
+
+  // MARK: Where the voice is in the words
+
+  /// One second of sound at 24 kHz (pcm16, mono), sent as the next chunk of the reply.
+  private func second(_ response: String = "r1") {
+    wire.emit([
+      "type": .string("response.audio.delta"), "item_id": .string("a1"), "response_id": .string(response),
+      "delta": .string(Data(count: 48000).base64EncodedString()),
+    ])
+  }
+
+  private func playing(buffered: Int, active: Bool = true) {
+    audio.emit([
+      "type": .string("playback"), "active": .bool(active), "buffered_frames": .number(Double(buffered)),
+      "sample_rate": .number(24000), "rms": .number(active ? 0.2 : 0),
+    ])
+  }
+
+  func testThereIsNothingToFollowBeforeThePlayerHasStartedOnTheReply() async {
+    await startCall()
+    created("r1")
+    delta("a1", "你好你好。", response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    XCTAssertNil(voice.speechProgress, "sound is queued but nothing has been heard")
+  }
+
+  func testTheTimePlayedIsWhatArrivedLessWhatIsStillWaiting() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", "你好你好。", response: "r1")
+    second()
+    second()
+    await settle({ [self] in audio.fed.count == 2 })
+    playing(buffered: 36000)
+    await settle({ [self] in voice.speaking })
+    let p = try XCTUnwrap(voice.speechProgress)
+    XCTAssertEqual(p.played, 0.5, accuracy: 0.001, "two seconds arrived, 1.5 are still in the player")
+    XCTAssertTrue(p.live)
+    XCTAssertFalse(p.cut)
+    XCTAssertNil(p.total, "more sound may still come")
+    playing(buffered: 12000)
+    await pause(0.05)
+    XCTAssertEqual(try XCTUnwrap(voice.speechProgress).played, 1.5, accuracy: 0.001)
+  }
+
+  func testTheLengthOfTheSoundIsKnownOnceItIsAllHere() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", "你好你好。", response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    playing(buffered: 24000)
+    await settle({ [self] in voice.speaking })
+    XCTAssertNil(voice.speechProgress?.total)
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    done("r1", output: [output("a1", "你好你好。")])
+    await settle({ [self] in voice.speechProgress?.total != nil })
+    XCTAssertEqual(try XCTUnwrap(voice.speechProgress?.total), 1, accuracy: 0.001)
+  }
+
+  func testAFinishedReplyIsNotFollowedAndANewReplyStartsFromNothing() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", "你好你好。", response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    playing(buffered: 24000)
+    await settle({ [self] in voice.speaking })
+    // the reply ends and its sound is out (a reply still being made would be waiting for more sound, and is followed)
+    done("r1", output: [output("a1", "你好你好。")])
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    playing(buffered: 0, active: false)
+    await settle({ [self] in !voice.speaking })
+    await settle({ [self] in voice.speechProgress?.live == false })
+    let p = try XCTUnwrap(voice.speechProgress)
+    XCTAssertFalse(p.live)
+    XCTAssertFalse(p.cut)
+    XCTAssertEqual(p.played, 1, accuracy: 0.001)
+    XCTAssertNil(p.position(in: SpokenText("你好你好。")), "said to the end: nothing marked")
+    // pressing to talk after it ended is not a cut
+    await voice.interrupt()
+    XCTAssertEqual(voice.speechProgress?.cut, false)
+    created("r2")
+    await settle({ [self] in voice.speechProgress == nil })
+    XCTAssertNil(voice.speechProgress, "the new reply has no words and no sound yet")
+  }
+
+  func testACutReplyKeepsThePlaceItHadReachedUntilTheNextReplyBegins() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", "你好你好。", response: "r1")
+    second()
+    second()
+    await settle({ [self] in audio.fed.count == 2 })
+    playing(buffered: 36000)
+    await settle({ [self] in voice.speaking })
+    await voice.interrupt()
+    let p = try XCTUnwrap(voice.speechProgress)
+    XCTAssertTrue(p.cut)
+    XCTAssertFalse(p.live)
+    XCTAssertEqual(p.played, 0.5, accuracy: 0.001)
+    // what the player does afterwards does not move it
+    playing(buffered: 0, active: false)
+    await pause(0.05)
+    XCTAssertEqual(try XCTUnwrap(voice.speechProgress).played, 0.5, accuracy: 0.001)
+    XCTAssertEqual(voice.speechProgress?.cut, true)
+    created("r2")
+    await settle({ [self] in voice.speechProgress == nil })
+    XCTAssertNil(voice.speechProgress)
+  }
+
+  func testALostConnectionAlsoLeavesTheMarkWhereTheVoiceStopped() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", "你好你好。", response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    playing(buffered: 12000)
+    await settle({ [self] in voice.speaking })
+    wire.drop()
+    await settle({ [self] in voice.speechProgress?.cut == true })
+    XCTAssertEqual(try XCTUnwrap(voice.speechProgress).played, 0.5, accuracy: 0.001)
+  }
+
+  func testAVoiceThatSpeaksFasterThanTheStartingPaceIsLearnedForTheNextReply() async throws {
+    await startCall()
+    // "你好你好" weighs 4 units and its sound is one second long: a pace of 0.25 s a unit
+    created("r1")
+    delta("a1", "你好你好", response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    playing(buffered: 24000)
+    await settle({ [self] in voice.speaking })
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    await settle({ [self] in voice.speechProgress?.total != nil })
+    done("r1", output: [output("a1", "你好你好")])
+    playing(buffered: 0, active: false)
+    await settle({ [self] in !voice.speaking })
+    created("r2")
+    delta("a2", "再来一句", response: "r2")
+    second("r2")
+    await settle({ [self] in audio.fed.count == 2 })
+    playing(buffered: 24000)
+    await settle({ [self] in voice.speaking })
+    XCTAssertEqual(try XCTUnwrap(voice.speechProgress).pace, 0.25, accuracy: 0.001, "r2 starts from what r1 showed")
+  }
+
+  // MARK: A reply the sound of which ends in parts
+
+  private var twoParagraphs: String { String(repeating: "一二三四五六七八九十", count: 4) + "。\n\n" + String(repeating: "上下左右前后东西南北", count: 4) + "。" }
+
+  /// What the lit edge says right now for the reply on screen (the estimate before any smoothing).
+  private func estimate() -> Double? {
+    voice.speechProgress?.position(in: SpokenText(voice.lastBot))
+  }
+
+  func testAnEndMarkerForOnlyTheFirstParagraphDoesNotMakeTheEdgeLeap() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", twoParagraphs, response: "r1")
+    // the first paragraph's sound arrives (8 s), and 4 s of it have been played
+    second()
+    second()
+    second()
+    second()
+    second()
+    second()
+    second()
+    second()
+    await settle({ [self] in audio.fed.count == 8 })
+    playing(buffered: 4 * 24000)
+    await settle({ [self] in voice.speaking })
+    let before = try XCTUnwrap(estimate())
+    // the server says the sound of its first part is done (the reply itself is not: its second paragraph is still being made)
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1"), "content_index": .number(0)])
+    await pause(0.1)
+    let after = try XCTUnwrap(estimate())
+    XCTAssertEqual(after, before, accuracy: 1, "a part's end says nothing about how long the whole reply's sound is")
+    XCTAssertNil(voice.speechProgress?.total)
+  }
+
+  func testTheSoundIsTakenAsCompleteOnlyWhenTheReplyHasEndedAndMarkedItsEnd() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", twoParagraphs, response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    playing(buffered: 12000)
+    await settle({ [self] in voice.speaking })
+    done("r1", output: [output("a1", twoParagraphs)])
+    await pause(0.1)
+    XCTAssertNil(voice.speechProgress?.total, "the reply ended but its sound has not said so")
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    await settle({ [self] in voice.speechProgress?.total != nil })
+    XCTAssertEqual(try XCTUnwrap(voice.speechProgress?.total), 1, accuracy: 0.001)
+  }
+
+  func testSoundThatComesAfterTheEndWasTakenRevokesIt() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", twoParagraphs, response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    playing(buffered: 12000)
+    await settle({ [self] in voice.speaking })
+    done("r1", output: [output("a1", twoParagraphs)])
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    await settle({ [self] in voice.speechProgress?.total != nil })
+    // the next paragraph's sound arrives after all
+    second()
+    await settle({ [self] in audio.fed.count == 2 })
+    XCTAssertNil(voice.speechProgress?.total, "it was not complete")
+  }
+
+  func testTheEndMarkerBeforeTheReplyEndsStillCountsOnceTheReplyEnds() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", twoParagraphs, response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    playing(buffered: 12000)
+    await settle({ [self] in voice.speaking })
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    await pause(0.05)
+    XCTAssertNil(voice.speechProgress?.total)
+    done("r1", output: [output("a1", twoParagraphs)])
+    await settle({ [self] in voice.speechProgress?.total != nil })
+    XCTAssertEqual(try XCTUnwrap(voice.speechProgress?.total), 1, accuracy: 0.001)
+  }
+
+  func testAReplyThatWasRevokedDoesNotTeachTheNextOneAWrongPace() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", twoParagraphs, response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    playing(buffered: 12000)
+    await settle({ [self] in voice.speaking })
+    done("r1", output: [output("a1", twoParagraphs)])
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    await settle({ [self] in voice.speechProgress?.total != nil })
+    // more sound: the first reading of the sound's length (1 s for 90 characters) was wrong
+    for _ in 0..<17 { second() }
+    await settle({ [self] in audio.fed.count == 18 })
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    await settle({ [self] in voice.speechProgress?.total != nil })
+    playing(buffered: 0, active: false)
+    await settle({ [self] in !voice.speaking })
+    created("r2")
+    delta("a2", "再来一句话", response: "r2")
+    second("r2")
+    await settle({ [self] in audio.fed.count == 19 })
+    playing(buffered: 12000)
+    await settle({ [self] in voice.speaking })
+    let words = SpokenText(twoParagraphs)
+    XCTAssertEqual(try XCTUnwrap(voice.speechProgress).pace, 18 / words.totalWeight, accuracy: 0.002, "18 s for those words, not 1 s")
+  }
+
+  func testTheTraceTellsWhatHappenedToTheSoundAndTheWords() async {
+    var lines: [String] = []
+    voice.traceSink = { lines.append($0) }
+    await startCall()
+    created("r1")
+    delta("a1", "你好你好", response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    playing(buffered: 12000)
+    await settle({ [self] in voice.speaking })
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1"), "content_index": .number(0)])
+    done("r1", output: [output("a1", "你好你好")])
+    await settle({ [self] in voice.speechTrace.contains { $0.contains("all sound taken as arrived") } })
+    let trace = voice.speechTrace.joined(separator: "\n")
+    for expected in ["=== call start", "created reply=", "text item=", "audio ", "player started", "marker localrouter.response.speech_done", "part=0", "response.done", "all sound taken as arrived"] {
+      XCTAssertTrue(trace.contains(expected), "the trace has \(expected): \(trace)")
+    }
+    XCTAssertEqual(lines, voice.speechTrace, "the sink gets every line")
+    XCTAssertFalse(trace.contains("你好"), "no words in the trace")
+  }
+
+  // MARK: A reply the server failed, and what is learned of a voice
+
+  func testAReplyTheServerFailedKeepsTheMarkWhereTheSoundRanOut() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", twoParagraphs, response: "r1")
+    for _ in 0..<3 { second() }
+    await settle({ [self] in audio.fed.count == 3 })
+    playing(buffered: 24000)
+    await settle({ [self] in voice.speaking })
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    done("r1", status: "failed")
+    await settle({ [self] in replies.first?.status == "interrupted" })
+    // the sound that was already there plays out, then stops
+    playing(buffered: 0, active: false)
+    await settle({ [self] in !voice.speaking })
+    let p = try XCTUnwrap(voice.speechProgress, "the words are not turned back into plain text")
+    XCTAssertTrue(p.cut)
+    XCTAssertFalse(p.live)
+    XCTAssertEqual(p.played, 3, accuracy: 0.001, "all the sound there was")
+    XCTAssertLessThan(try XCTUnwrap(p.position(in: SpokenText(voice.lastBot))), Double(SpokenText(twoParagraphs).clusters.count) / 2, "well short of the end of the words")
+  }
+
+  func testTheMarkStaysWhereTheSoundStoppedWhileTheServerIsStillMakingTheReply() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", twoParagraphs, response: "r1")
+    for _ in 0..<3 { second() }
+    await settle({ [self] in audio.fed.count == 3 })
+    playing(buffered: 24000)
+    await settle({ [self] in voice.speaking })
+    // the sound ran dry, the reply is not over: the voice is waiting, the words are not turned plain
+    playing(buffered: 0, active: false)
+    await settle({ [self] in !voice.speaking })
+    let waiting = try XCTUnwrap(voice.speechProgress, "a stall is not the end of the reply")
+    XCTAssertTrue(waiting.live)
+    XCTAssertFalse(waiting.cut)
+    XCTAssertEqual(waiting.played, 3, accuracy: 0.001)
+    XCTAssertNotNil(waiting.position(in: SpokenText(voice.lastBot)))
+    // when the reply does end and the sound is out, the words are plain again
+    done("r1", output: [output("a1", twoParagraphs)])
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    await settle({ [self] in voice.speechProgress?.live == false })
+    XCTAssertNil(voice.speechProgress?.position(in: SpokenText(voice.lastBot)))
+  }
+
+  func testTheServersSpeechErrorKeepsTheMarkFromThatMomentNotFromTheReplyEnd() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", twoParagraphs, response: "r1")
+    for _ in 0..<3 { second() }
+    await settle({ [self] in audio.fed.count == 3 })
+    playing(buffered: 24000)
+    await settle({ [self] in voice.speaking })
+    playing(buffered: 0, active: false)
+    await settle({ [self] in !voice.speaking })
+    // the error arrives a moment before `response.done`; the words must not be plain in between
+    wire.emit(["type": .string("error"), "error": .object(["code": .string("speech_failed"), "message": .string("x")])])
+    await settle({ [self] in voice.error != nil })
+    let p = try XCTUnwrap(voice.speechProgress)
+    XCTAssertTrue(p.cut)
+    XCTAssertFalse(p.live)
+    XCTAssertEqual(p.played, 3, accuracy: 0.001)
+  }
+
+  func testWhatAVoiceShowedOfItsSpeedIsKeptForTheNextCall() async throws {
+    await startCall()
+    created("r1")
+    delta("a1", "你好你好", response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    playing(buffered: 24000)
+    await settle({ [self] in voice.speaking })
+    done("r1", output: [output("a1", "你好你好")])
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    await settle({ [self] in voice.speechProgress?.total != nil })
+    await voice.stop()
+    XCTAssertTrue(voice.paceDefaults.dictionaryRepresentation().keys.contains { $0.hasPrefix("speechPace.") })
+    // the next call starts from it
+    await startCall()
+    XCTAssertEqual(voice.carriedSpeechPace, 0.25, accuracy: 0.001, "1 s for four characters")
+  }
+
+  func testTheServersErrorsAndLongSilencesAreInTheTrace() async {
+    await startCall()
+    created("r1")
+    delta("a1", "你好你好", response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    wire.emit(["type": .string("error"), "error": .object(["code": .string("speech_failed"), "message": .string("tts upstream timed out")])])
+    await settle({ [self] in voice.speechTrace.contains { $0.contains("error event") } })
+    wire.emit([
+      "type": .string("response.done"),
+      "response": .object(["id": .string("r1"), "status": .string("failed"), "output": .array([]), "status_details": .object(["type": .string("failed"), "error": .object(["code": .string("tts_timeout"), "message": .string("no sound for 8 s")])])]),
+    ])
+    await settle({ [self] in voice.speechTrace.contains { $0.contains("reply failed") } })
+    let trace = voice.speechTrace.joined(separator: "\n")
+    XCTAssertTrue(trace.contains("error event: type=- code=speech_failed message=tts upstream timed out"), trace)
+    XCTAssertTrue(trace.contains("reply failed: type=failed") && trace.contains("tts_timeout") && trace.contains("no sound for 8 s"), trace)
+  }
+
+  func testSoundThatComesAfterALongSilenceIsNoted() async {
+    var now = Date(timeIntervalSince1970: 5000)
+    voice = VoiceSession(store: store, audio: audio, now: { now })
+    voice.paceDefaults = UserDefaults(suiteName: "voice-tests-" + UUID().uuidString) ?? .standard
+    store.voice = voice
+    await startCall()
+    created("r1")
+    delta("a1", "你好你好", response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    now = now.addingTimeInterval(7.2)
+    second()
+    await settle({ [self] in audio.fed.count == 2 })
+    XCTAssertTrue(voice.speechTrace.contains { $0.contains("sound came again after 7.2s without any") }, voice.speechTrace.joined(separator: "\n"))
+  }
+
+  func testTheHeartbeatTellsASilentServerFromABusyPhone() async {
+    var now = Date(timeIntervalSince1970: 9000)
+    voice = VoiceSession(store: store, audio: audio, now: { now })
+    voice.paceDefaults = UserDefaults(suiteName: "voice-tests-" + UUID().uuidString) ?? .standard
+    store.voice = voice
+    await startCall()
+    created("r1")
+    delta("a1", "你好", response: "r1")
+    await settle({ [self] in voice.lastBot == "你好" })
+    // the server says nothing for 5 s while the reply is still being made
+    now = now.addingTimeInterval(5)
+    await settle({ [self] in voice.speechTrace.contains { $0.contains("heartbeat") } }, timeout: 3)
+    let line = voice.speechTrace.first { $0.contains("heartbeat") } ?? ""
+    XCTAssertTrue(line.contains("server silent for 5.0s (reply still being made)"), line)
+    XCTAssertTrue(line.contains("this check ran 4.0s late") || line.contains("this check ran"), line)
+  }
 }

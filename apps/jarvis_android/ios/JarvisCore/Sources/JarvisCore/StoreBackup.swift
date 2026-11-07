@@ -80,6 +80,7 @@ extension JarvisStore {
         "received_pcm_bytes": .number(Double(session?.receivedPcmBytes ?? 0)),
         "buffered_frames": .number(Double(session?.bufferedFrames ?? 0)),
         "playback_rate": .number(Double(session?.playbackRate ?? 24000)),
+        "speech_trace": .array((session?.speechTrace.suffix(150) ?? []).map { .string($0) }),
       ]),
       "error": error.map { .string($0) } ?? .null,
       "storage_error": storageError.map { .string($0) } ?? .null,

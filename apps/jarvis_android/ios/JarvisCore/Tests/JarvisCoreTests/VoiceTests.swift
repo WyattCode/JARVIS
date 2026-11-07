@@ -133,6 +133,7 @@ final class VoiceTests: XCTestCase {
     _ = await store.login("u", "p")
     audio = FakeAudio()
     voice = VoiceSession(store: store, audio: audio)
+    voice.paceDefaults = UserDefaults(suiteName: "voice-tests-" + UUID().uuidString) ?? .standard
     store.voice = voice
     voice.reconnectDelay = { _ in 0.02 }
   }
