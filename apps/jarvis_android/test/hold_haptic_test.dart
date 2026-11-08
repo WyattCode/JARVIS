@@ -10,7 +10,7 @@ import 'voice_layout_test.dart' show LayoutApi;
 
 void main() {
   testWidgets(
-    'Accepted PTT hold gives one light haptic, with no repeated or unavailable feedback',
+    'Accepted PTT hold gives one medium haptic, with no repeated or unavailable feedback',
     (t) async {
       final calls = <MethodCall>[];
       var hapticUnavailable = false;
@@ -50,7 +50,7 @@ void main() {
       await t.pump();
       expect(c.voice.held, true);
       expect(calls.length, 1);
-      expect(calls.single.arguments, 'HapticFeedbackType.lightImpact');
+      expect(calls.single.arguments, 'HapticFeedbackType.mediumImpact');
       final second = await t.startGesture(t.getCenter(button), pointer: 3);
       await t.pump(const Duration(milliseconds: 400));
       expect(calls.length, 1);

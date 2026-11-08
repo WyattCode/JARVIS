@@ -56,52 +56,43 @@ void main() {
     },
   );
 
-  testWidgets('Swipe deletes, Undo restores and sidebar notice expires', (
-    t,
-  ) async {
-    t.view.devicePixelRatio = 1;
-    t.view.physicalSize = const Size(860, 608);
-    addTearDown(t.view.resetDevicePixelRatio);
-    addTearDown(t.view.resetPhysicalSize);
-    final c = JarvisController(FakeApi(), MemoryVault());
-    await c.initialize();
-    final victim = c.current;
-    await t.pumpWidget(MaterialApp(home: JarvisHome(controller: c)));
-    await t.pump();
-    await t.drag(
-      find.byKey(ValueKey('conversation-surface-${victim.id}')),
-      const Offset(-260, 0),
-    );
-    await t.pump();
-    await t.pump(const Duration(milliseconds: 650));
-    await t.pump(const Duration(milliseconds: 350));
-    expect(c.conversations, isNot(contains(victim)));
-    expect(find.text('会话已删除'), findsOneWidget);
-    final note = t.getRect(find.byKey(const Key('sidebar-notice')));
-    expect(
-      note.right,
-      lessThanOrEqualTo(
-        t.getRect(find.byKey(const Key('docked-sidebar'))).right,
-      ),
-    );
-    await t.tap(find.text('撤销'));
-    await t.pump();
-    expect(c.conversations, contains(victim));
-    expect(find.text('会话已删除'), findsNothing);
-    await t.drag(
-      find.byKey(ValueKey('conversation-surface-${victim.id}')),
-      const Offset(-260, 0),
-    );
-    await t.pump();
-    await t.pump(const Duration(milliseconds: 650));
-    await t.pump(const Duration(milliseconds: 350));
-    await t.pump(const Duration(seconds: 3));
-    expect(find.text('会话已删除'), findsNothing);
-    await t.pumpWidget(const SizedBox());
-    c.dispose();
-  });
+  testWidgets(
+    'Deleting from the menu asks first, Undo restores and the sidebar notice expires',
+    (t) async {
+      t.view.devicePixelRatio = 1;
+      t.view.physicalSize = const Size(860, 608);
+      addTearDown(t.view.resetDevicePixelRatio);
+      addTearDown(t.view.resetPhysicalSize);
+      final c = JarvisController(FakeApi(), MemoryVault());
+      await c.initialize();
+      final victim = c.current;
+      await t.pumpWidget(MaterialApp(home: JarvisHome(controller: c)));
+      await t.pump();
+      await deleteConversationViaMenu(t);
+      expect(c.conversations, isNot(contains(victim)));
+      expect(find.text('会话已删除'), findsOneWidget);
+      final note = t.getRect(find.byKey(const Key('sidebar-notice')));
+      expect(
+        note.right,
+        lessThanOrEqualTo(
+          t.getRect(find.byKey(const Key('docked-sidebar'))).right,
+        ),
+      );
+      await t.tap(find.text('撤销'));
+      await t.pump();
+      expect(c.conversations, contains(victim));
+      expect(find.text('会话已删除'), findsNothing);
+      await deleteConversationViaMenu(t);
+      await t.pump(const Duration(milliseconds: 650));
+      await t.pump(const Duration(milliseconds: 350));
+      await t.pump(const Duration(seconds: 3));
+      expect(find.text('会话已删除'), findsNothing);
+      await t.pumpWidget(const SizedBox());
+      c.dispose();
+    },
+  );
 
-  testWidgets('Generating conversation rejects swipe without losing its row', (
+  testWidgets('A generating conversation cannot be deleted and keeps its row', (
     t,
   ) async {
     t.view.devicePixelRatio = 1;
@@ -119,9 +110,7 @@ void main() {
     await t.pump();
     expect(c.canDeleteConversation(victim.id), isFalse);
     final row = find.byKey(ValueKey('conversation-surface-${victim.id}'));
-    await t.drag(row, const Offset(-260, 0));
-    await t.pump();
-    await t.pump(const Duration(milliseconds: 650));
+    await deleteConversationViaMenu(t);
     expect(c.conversations, contains(victim));
     expect(row, findsOneWidget);
     expect(find.text('请先结束此会话的任务或通话，再删除会话'), findsOneWidget);
@@ -146,9 +135,7 @@ void main() {
     await t.tap(find.byTooltip('展开会话'));
     await t.pump();
     await t.pump(const Duration(milliseconds: 400));
-    await t.tap(find.byTooltip('会话操作').first);
-    await t.pump();
-    await t.pump(const Duration(milliseconds: 200));
+    await openConversationMenu(t);
     await t.tap(find.text('重命名'));
     await t.pump();
     await t.pump(const Duration(milliseconds: 400));

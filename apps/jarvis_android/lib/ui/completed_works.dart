@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
+import 'package:flutter/services.dart';
 
 import '../model/media.dart';
 import '../model/conversation.dart';
@@ -9,6 +11,13 @@ import '../state/jarvis_controller.dart';
 import 'media_widgets.dart';
 import 'call_controls.dart';
 import 'action_menu.dart';
+import 'page_palette.dart';
+import 'picker_sheet.dart';
+
+/// How long a finished work waits before the works sheet opens by itself (the
+/// iOS version waits the same second, so that a result arriving with the end of
+/// a reply does not cut it off).
+const workPresentDelay = Duration(seconds: 1);
 
 final _worksOpen = Expando<bool>('generated-works-open');
 final _worksOwner = Expando<String>('generated-works-owner');
@@ -29,43 +38,13 @@ Future<void> showGeneratedWorks(
   _worksOwner[controller] = ownerId;
   _worksHighlights[controller] = {...highlightIds};
   try {
-    await showModalBottomSheet<void>(
+    await showPickerSheet<void>(
       context: context,
       routeSettings: const RouteSettings(name: voiceWorksRouteName),
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (context) => SafeArea(
-        child: SizedBox(
-          height: MediaQuery.sizeOf(context).height * .8,
-          child: ListenableBuilder(
-            listenable: controller,
-            builder: (context, _) => ListView(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(4, 4, 4, 16),
-                  child: Text(
-                    '生成作品',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                ),
-                if (!controller.conversations.any(
-                  (c) => c.id == ownerId && c.tasks.isNotEmpty,
-                ))
-                  const Padding(
-                    padding: EdgeInsets.all(20),
-                    child: Text('此会话暂无作品'),
-                  ),
-                for (final task in _orderedWorks(controller, ownerId))
-                  MediaCard(
-                    key: ValueKey(task.id),
-                    task: task,
-                    controller: controller,
-                  ),
-              ],
-            ),
-          ),
-        ),
+      builder: (context, scroll) => ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) =>
+            WorksSheetBody(controller: controller, scroll: scroll),
       ),
     );
   } finally {
@@ -75,13 +54,86 @@ Future<void> showGeneratedWorks(
   }
 }
 
-List<MediaTask> _orderedWorks(JarvisController controller, String ownerId) {
-  final tasks = controller.conversations
-      .where((c) => c.id == ownerId)
-      .expand((c) => c.tasks)
-      .toList()
-      .reversed
-      .toList();
+/// What the works sheet holds: the title, then the works of every
+/// conversation, the newest first (or, with nothing made yet, a quiet note).
+class WorksSheetBody extends StatelessWidget {
+  const WorksSheetBody({
+    super.key,
+    required this.controller,
+    required this.scroll,
+  });
+  final JarvisController controller;
+  final ScrollController scroll;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = PagePalette.of(context);
+    final theme = Theme.of(context);
+    final works = _orderedWorks(controller);
+    return CustomScrollView(
+      key: const Key('works-sheet'),
+      controller: scroll,
+      slivers: [
+        const SliverToBoxAdapter(child: PickerGrabber()),
+        const SliverToBoxAdapter(child: PickerTitle('作品')),
+        if (works.isEmpty)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(
+              key: const Key('works-empty'),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.photo_library_outlined,
+                      size: 34,
+                      color: p.onSurfaceVariant,
+                    ),
+                    const SizedBox(height: 8),
+                    Text('还没有作品', style: TextStyle(color: p.onSurfaceVariant)),
+                  ],
+                ),
+              ),
+            ),
+          )
+        else
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            // The cards sit on the container colour.
+            sliver: SliverToBoxAdapter(
+              child: Theme(
+                data: theme.copyWith(
+                  cardTheme: theme.cardTheme.copyWith(
+                    color: p.container,
+                    margin: EdgeInsets.zero,
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    for (var i = 0; i < works.length; i++) ...[
+                      if (i > 0) const SizedBox(height: 12),
+                      MediaCard(
+                        key: ValueKey(works[i].id),
+                        task: works[i],
+                        controller: controller,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// The works of every conversation, the newest first; the ones that have just
+/// finished stand before the rest.
+List<MediaTask> _orderedWorks(JarvisController controller) {
+  final tasks = [for (final c in controller.conversations) ...c.tasks.reversed];
   final highlight = _worksHighlights[controller] ?? <String>{};
   return [
     ...tasks.where((t) => highlight.contains(t.id)),
@@ -113,6 +165,24 @@ class _CompletedWorksPresenterState extends State<CompletedWorksPresenter> {
   final _seen = <String>{};
   final _pending = <String>{};
   Timer? _timer;
+
+  /// A finished work is shown after it has stood for [workPresentDelay] (a
+  /// result that arrives with the end of a reply does not cut it off); the
+  /// reminder that something finished is not held back.
+  Timer? _settle;
+  bool _settled = false;
+  void _restartSettle() {
+    _settled = false;
+    _settle?.cancel();
+    _settle = Timer(workPresentDelay, () {
+      _settle = null;
+      _settled = true;
+      _timer?.cancel();
+      _timer = null;
+      _present();
+    });
+  }
+
   bool _notice = false;
   Rect? _anchorRect;
   bool _samplingAnchor = false;
@@ -188,6 +258,8 @@ class _CompletedWorksPresenterState extends State<CompletedWorksPresenter> {
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => oldController.updatePendingWorkNotice(null, clearSource: this),
     );
+    _settle?.cancel();
+    _settle = null;
     _timer?.cancel();
     _timer = null;
     _seen.clear();
@@ -200,6 +272,7 @@ class _CompletedWorksPresenterState extends State<CompletedWorksPresenter> {
     for (final task in _completed) {
       if (_seen.add(task.id)) {
         _pending.add(task.id);
+        _restartSettle();
         _worksHighlights[widget.controller]?.add(task.id);
       }
     }
@@ -260,6 +333,18 @@ class _CompletedWorksPresenterState extends State<CompletedWorksPresenter> {
       _timer = Timer(const Duration(milliseconds: 350), _present);
       return;
     }
+    if (!_settled) {
+      _timer = Timer(const Duration(milliseconds: 350), _present);
+      return;
+    }
+    // The result is told as the sheet opens: a tap on the body, and a word for
+    // a screen reader (which would otherwise see only a sheet appear).
+    unawaited(HapticFeedback.mediumImpact());
+    SemanticsService.sendAnnouncement(
+      View.of(context),
+      '作品已生成',
+      Directionality.of(context),
+    );
     _openPending(_foreground);
     if (_pending.isNotEmpty) {
       _timer = Timer(const Duration(milliseconds: 350), _present);
@@ -269,6 +354,7 @@ class _CompletedWorksPresenterState extends State<CompletedWorksPresenter> {
   @override
   void dispose() {
     _timer?.cancel();
+    _settle?.cancel();
     widget.controller.removeListener(_sync);
     final controller = widget.controller;
     WidgetsBinding.instance.addPostFrameCallback(

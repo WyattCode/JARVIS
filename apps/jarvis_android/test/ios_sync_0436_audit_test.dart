@@ -121,7 +121,7 @@ void main() {
     expect(t.takeException(), isNull);
     final arrow = find.byIcon(Icons.unfold_more_rounded);
     final row = find.byType(PickerRow<int>);
-    expect(t.getRect(row).right-t.getRect(arrow).right, closeTo(16, .1));
+    expect(t.getRect(row).right - t.getRect(arrow).right, closeTo(16, .1));
     await t.tap(find.text('回答前等待时长'));
     await t.pumpAndSettle();
     expect(find.text('5 秒'), findsWidgets);

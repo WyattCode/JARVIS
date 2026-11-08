@@ -58,16 +58,9 @@ void main() {
       c.current.messages.add(ChatMessage('user', '你好'));
       c.notifyDraftSuggestion();
       await t.pump();
-      final line = find.byKey(const ValueKey('chat-heading-line'));
-      expect(t.widget(line), isA<Row>());
-      expect(
-        find.descendant(of: line, matching: find.text('JARVIS')),
-        findsNothing,
-      );
-      expect(
-        find.descendant(of: line, matching: find.text(c.current.title)),
-        findsOneWidget,
-      );
+      // The bar has no title (as on iOS), however long the conversation's is.
+      expect(find.byKey(const ValueKey('chat-heading-line')), findsNothing);
+      expect(find.text(c.current.title), findsNothing);
       expect(t.takeException(), isNull);
       await t.pumpWidget(const SizedBox());
       c.dispose();

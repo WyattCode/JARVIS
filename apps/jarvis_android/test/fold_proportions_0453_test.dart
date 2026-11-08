@@ -93,7 +93,8 @@ void main() {
         final column = t.getRect(find.byKey(const Key('voice-transcript')));
         for (final f in [
           find.byType(CoreAvatar),
-          find.text('已就绪'),
+          // Ready and hold-to-talk: the page asks for the button.
+          find.text('按住按钮说话'),
           find.byType(AudioWaveform),
         ]) {
           final r = t.getRect(f);

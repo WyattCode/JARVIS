@@ -47,8 +47,13 @@ class CatalogVoiceApi extends VoiceApi {
   @override
   Future<List<ModelInfo>> models() async => [
     ...await super.models(),
-    ModelInfo('speech', 'Speech', kind: 'speech', defaultVoice: 'Atlas',
-      voices: const [VoiceInfo('Atlas', 'Atlas', '')]),
+    ModelInfo(
+      'speech',
+      'Speech',
+      kind: 'speech',
+      defaultVoice: 'Atlas',
+      voices: const [VoiceInfo('Atlas', 'Atlas', '')],
+    ),
   ];
 }
 
@@ -57,6 +62,9 @@ class FakeAudio extends AudioDevice {
   final fed = <Uint8List>[], clips = <PcmClip>[];
   void Function(Uint8List)? input;
   int starts = 0, stops = 0, flushes = 0, finishes = 0, reconfigures = 0;
+  final pauses = <bool>[];
+  @override
+  Future<void> setPaused(bool paused) async => pauses.add(paused);
   bool? echo;
   Completer<void>? stopBarrier, flushBarrier;
   Object? flushFailure;

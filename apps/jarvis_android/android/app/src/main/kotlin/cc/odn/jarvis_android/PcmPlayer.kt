@@ -28,6 +28,7 @@ class PcmPlayer(private val event: (Map<String, Any>) -> Unit) {
         require(sampleRate in 8000..192000)
         synchronized(lock) {
             epoch = generation; queue.clear(); pendingBytes.set(0)
+            held = false
             track?.pause(); track?.flush(); track?.release(); track = null
             rate = sampleRate; submitted = 0; levels.clear()
             val min = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -63,13 +64,25 @@ class PcmPlayer(private val event: (Map<String, Any>) -> Unit) {
     fun clear(generation: Int) {
         synchronized(lock) {
             epoch = generation; queue.clear(); pendingBytes.set(0); submitted = 0; levels.clear()
+            held = false
             track?.pause(); track?.flush(); track?.play()
+        }
+        publish()
+    }
+    /** A held voice stays where it is (its samples wait in the track) and goes on from the same sample. */
+    @Volatile private var held = false
+    fun setPaused(paused: Boolean) {
+        synchronized(lock) {
+            held = paused
+            val t = track ?: return
+            if (paused) t.pause() else t.play()
         }
         publish()
     }
     fun stop() {
         synchronized(lock) {
             epoch++; queue.clear(); pendingBytes.set(0); submitted = 0; levels.clear()
+            held = false
             track?.pause(); track?.flush(); track?.release(); track = null
         }
         publish()

@@ -472,6 +472,7 @@ class SettingsChips extends StatelessWidget {
     required this.labels,
     required this.active,
     required this.onTap,
+    this.margin = 20,
   });
   static const height = 52.0;
 
@@ -484,6 +485,9 @@ class SettingsChips extends StatelessWidget {
   final ValueListenable<int> active;
   final ValueChanged<int> onTap;
 
+  /// The side margin round the capsule (the cards' own).
+  final double margin;
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -493,7 +497,7 @@ class SettingsChips extends StatelessWidget {
       height: height,
       child: Padding(
         // The same side margin as the cards below, so the capsule and the cards share one width.
-        padding: const EdgeInsets.symmetric(horizontal: 20),
+        padding: EdgeInsets.symmetric(horizontal: margin),
         child: Center(
           child: Container(
             height: capsuleHeight,

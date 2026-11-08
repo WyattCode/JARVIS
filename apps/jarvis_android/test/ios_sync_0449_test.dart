@@ -5,36 +5,56 @@ import 'package:jarvis_android/model/conversation.dart';
 import 'package:jarvis_android/state/jarvis_controller.dart';
 import 'package:jarvis_android/ui/completed_works.dart';
 import 'package:jarvis_android/ui/jarvis_app.dart';
+
 import 'support.dart';
 
 void main() {
-  testWidgets('Completion waits through typing and opens after focus leaves', (t) async {
+  testWidgets('Completion waits through typing and opens after focus leaves', (
+    t,
+  ) async {
     final c = JarvisController(FakeApi(), MemoryVault());
     await c.initialize();
     final focus = FocusNode();
     final text = TextEditingController(text: '未发送草稿');
-    await t.pumpWidget(MaterialApp(home: Scaffold(body: CompletedWorksPresenter(
-      controller: c, child: TextField(focusNode: focus, controller: text),
-    ))));
+    await t.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: CompletedWorksPresenter(
+            controller: c,
+            child: TextField(focusNode: focus, controller: text),
+          ),
+        ),
+      ),
+    );
     focus.requestFocus();
     await t.pump();
-    c.current.tasks.add(MediaTask(id: 'ready', kind: 'video', prompt: '完成', args: {},
-      status: 'completed', urls: ['https://example.test/video.mp4']));
+    c.current.tasks.add(
+      MediaTask(
+        id: 'ready',
+        kind: 'video',
+        prompt: '完成',
+        args: {},
+        status: 'completed',
+        urls: ['https://example.test/video.mp4'],
+      ),
+    );
     c.notifyDraftSuggestion();
     await t.pump(const Duration(milliseconds: 500));
-    expect(find.text('生成作品'), findsNothing);
+    expect(find.text('作品'), findsNothing);
     expect(focus.hasFocus, isTrue);
     // A second completion while still composing remains deferred too.
     await t.pump(const Duration(milliseconds: 400));
-    expect(find.text('生成作品'), findsNothing);
+    expect(find.text('作品'), findsNothing);
     focus.unfocus();
     await t.pump();
     await t.pump(const Duration(milliseconds: 400));
     await t.pump(const Duration(milliseconds: 400));
-    expect(find.text('生成作品'), findsOneWidget);
+    expect(find.text('作品'), findsOneWidget);
     expect(text.text, '未发送草稿');
     await t.pumpWidget(const SizedBox());
-    focus.dispose(); text.dispose(); c.dispose();
+    focus.dispose();
+    text.dispose();
+    c.dispose();
   });
 
   testWidgets('Landscape sidebar choice survives portrait and back', (t) async {
@@ -59,10 +79,13 @@ void main() {
     c.dispose();
   });
 
-  testWidgets('Slow rendering batches deltas while final answer is immediate', (t) async {
+  testWidgets('Slow rendering batches deltas while final answer is immediate', (
+    t,
+  ) async {
     final api = FakeApi();
     final c = JarvisController(api, MemoryVault());
-    await c.initialize(); await c.login('Wyatt', 'test');
+    await c.initialize();
+    await c.login('Wyatt', 'test');
     c.setDraft('test');
     final send = c.send();
     await t.pump();
@@ -77,7 +100,8 @@ void main() {
     expect(notifications, 0);
     stream.add(const ChatDelta(text: '最后一段', done: true));
     await t.pump();
-    await stream.close(); await send;
+    await stream.close();
+    await send;
     expect(c.current.messages.last.text, '第一段最后一段');
     expect(notifications, 1);
     c.dispose();

@@ -100,6 +100,9 @@ class _AudioWaveformState extends State<AudioWaveform>
   );
 }
 
+/// The level bars of the call, as the iOS app draws them: 64 tapered bars,
+/// small dots at rest, rising and falling with the sound that is being played
+/// or heard, with a ripple that travels along them while there is sound.
 class _WavePainter extends CustomPainter {
   _WavePainter(this.motion, this.colors, this.reduced) : super(repaint: motion);
   final _WaveMotion motion;
@@ -108,42 +111,28 @@ class _WavePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     if (size.isEmpty) return;
-    final count = size.width >= 440
-        ? (size.width / 5.5).round().clamp(44, 128)
-        : size.width >= 220
-        ? 44
-        : size.width >= 140
-        ? 32
-        : 24;
-    final pitch = size.width / count;
-    final width = math.min(2.5, pitch * .48);
-    final base = motion.playing ? colors.onSurface : const Color(0xff8fdceb);
-    final color = Color.lerp(
-      colors.onSurfaceVariant,
-      base,
-      (motion.level * 4).clamp(0.0, 1.0),
-    )!;
+    const count = 64;
+    final step = size.width / count;
+    final time = reduced ? 0.0 : motion.time;
+    final level = motion.level;
     final paint = Paint()
-      ..strokeWidth = width
-      ..strokeCap = StrokeCap.round;
+      ..color = colors.onSurfaceVariant.withValues(alpha: level > 0 ? .9 : .45);
+    final w = math.max(1.5, step * .5);
     for (var i = 0; i < count; i++) {
-      final x = i / (count - 1);
-      final envelope = math.pow(math.sin(math.pi * x), 1.6).toDouble();
-      final ripple = .55 + .45 * (math.sin(i * 1.7) * math.cos(i * .6)).abs();
-      final wobble = reduced || motion.level == 0
-          ? 1.0
-          : .45 + .55 * math.sin(i * .45 + motion.time * 7).abs();
-      final height =
-          math.max(
-            .06,
-            envelope * ripple * (.12 + motion.level * .88) * wobble,
-          ) *
-          math.max(0, size.height - width);
-      paint.color = color.withValues(alpha: .35 + .6 * envelope);
-      final at = (i + .5) * pitch;
-      canvas.drawLine(
-        Offset(at, (size.height - height) / 2),
-        Offset(at, (size.height + height) / 2),
+      final x = (i + .5) * step;
+      final t = i / (count - 1);
+      // Tapered at both ends; a travelling ripple while there is sound.
+      final envelope = math.sin(t * math.pi);
+      final ripple = .5 + .5 * math.sin(i * .55 + time * 6);
+      final height = math.max(
+        2.0,
+        size.height * envelope * level * (.35 + .65 * ripple),
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(x - w / 2, size.height / 2 - height / 2, w, height),
+          Radius.circular(w / 2),
+        ),
         paint,
       );
     }

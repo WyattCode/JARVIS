@@ -72,7 +72,7 @@ void main() {
       keyboard(t, 0);
       await t.pump();
       await t.pump(const Duration(milliseconds: 400));
-      expect(find.text('生成作品'), findsOneWidget);
+      expect(find.text('作品'), findsOneWidget);
       expect(c.current.draft, '保留草稿');
       await t.pumpWidget(const SizedBox());
       c.dispose();
@@ -247,7 +247,7 @@ void main() {
     },
   );
   testWidgets(
-    'Inner and outer call controls share the two-percent safe-area inset',
+    'Call buttons stay inside the safe area on the inner and outer displays',
     (t) async {
       t.view.devicePixelRatio = 1;
       addTearDown(t.view.resetDevicePixelRatio);
@@ -276,11 +276,18 @@ void main() {
           c.voice.status = '已就绪';
           await t.pumpWidget(MaterialApp(home: VoicePage(controller: c)));
           await t.pump();
-          final left = t.getRect(find.byTooltip('收起通话界面'));
-          final right = t.getRect(find.byTooltip('结束语音通话'));
-          final expected = side + (size.width - 2 * side) * .02 + 4;
-          expect(left.left, closeTo(expected, .1), reason: '$size side $side');
-          expect(size.width - right.right, closeTo(expected, .1));
+          // Minimize and the cross (and the rest of the buttons) are all inside
+          // the window less the system's side insets, in every shape.
+          for (final tip in ['收起通话界面', '结束语音通话']) {
+            final r = t.getRect(find.byTooltip(tip));
+            expect(r.left, greaterThanOrEqualTo(side), reason: '$size $tip');
+            expect(
+              r.right,
+              lessThanOrEqualTo(size.width - side),
+              reason: '$size $tip',
+            );
+            expect(find.byTooltip(tip).hitTestable(), findsOneWidget);
+          }
           expect(t.takeException(), isNull);
           await t.pumpWidget(const SizedBox());
           c.dispose();

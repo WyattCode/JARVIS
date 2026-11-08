@@ -55,7 +55,7 @@ void main() {
     await t.pumpWidget(const SizedBox());
   });
   testWidgets(
-    'Conversation menu has round targets and conversation row is 58 while the new-chat button stays 53',
+    'A conversation row is 58 high and held, it offers rename and delete',
     (t) async {
       t.view.devicePixelRatio = 1;
       t.view.physicalSize = const Size(860, 608);
@@ -67,24 +67,16 @@ void main() {
       await t.pumpWidget(host(c));
       await t.pump();
       expect(
-        t.getSize(find.byKey(const Key('new-conversation'))).height,
-        closeTo(53, .1),
+        t
+            .getSize(
+              find.byKey(ValueKey('conversation-surface-${c.current.id}')),
+            )
+            .height,
+        closeTo(58, .1),
       );
-      final list = find.byKey(const Key('conversation-list'));
-      final tile = find
-          .descendant(of: list, matching: find.byType(ListTile))
-          .first;
-      expect(t.getSize(tile).height, closeTo(58, .1));
-      final button = t.widget<IconButton>(
-        find
-            .byWidgetPredicate((w) => w is IconButton && w.tooltip == '会话操作')
-            .first,
-      );
-      expect(button.style!.shape!.resolve({}), isA<CircleBorder>());
-      await t.tap(find.byTooltip('会话操作').first);
-      await t.pumpAndSettle();
-      expect(find.widgetWithText(MenuItemButton, '重命名'), findsOneWidget);
-      expect(find.widgetWithText(MenuItemButton, '删除'), findsOneWidget);
+      await openConversationMenu(t);
+      expect(find.text('重命名'), findsOneWidget);
+      expect(find.text('删除'), findsOneWidget);
       await t.pumpWidget(const SizedBox());
       c.dispose();
     },
@@ -109,12 +101,34 @@ void main() {
       ),
     );
     await t.pump();
-    final text = t
-        .widgetList<SelectableText>(find.byType(SelectableText))
-        .where((w) => w.data?.contains('测试') == true)
-        .toList();
-    expect(text.length, 2);
-    expect(text.every((w) => w.style?.fontSize == 24), true);
+    // What you said is in a pill; the reply is the lit text. Both use the
+    // chat's font size.
+    final you = t.widget<Text>(
+      find.descendant(
+        of: find.byKey(const Key('voice-you')),
+        matching: find.byType(Text),
+      ),
+    );
+    expect(you.data, '测试提问');
+    expect(you.style?.fontSize, 24);
+    final bot = t
+        .widgetList<RichText>(
+          find.descendant(
+            of: find.byKey(const Key('voice-transcript')),
+            matching: find.byType(RichText),
+          ),
+        )
+        .last;
+    expect(bot.text.toPlainText(), '测试回答');
+    final sizes = <double?>[];
+    bot.text.visitChildren((span) {
+      if (span is TextSpan && span.text != null) {
+        sizes.add(span.style?.fontSize);
+      }
+      return true;
+    });
+    expect(sizes, isNotEmpty);
+    expect(sizes.every((s) => s == 24), true);
     await t.pumpWidget(const SizedBox());
     c.dispose();
   });

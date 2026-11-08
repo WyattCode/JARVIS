@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:jarvis_android/state/jarvis_controller.dart';
-import 'package:jarvis_android/model/media.dart';
-import 'package:jarvis_android/ui/action_menu.dart';
 import 'package:jarvis_android/ui/voice_page.dart';
 
 import 'voice_layout_test.dart' show LayoutApi, settleTask;
@@ -57,7 +55,7 @@ void main() {
       final replyingStatus = h.session.status;
       await h.close();
       expect(thinkingStatus, '正在思考');
-      expect(replyingStatus, '正在准备语音');
+      expect(replyingStatus, '正在回复');
     },
   );
   test(
@@ -147,33 +145,6 @@ void main() {
       expect(held, false);
     },
   );
-  testWidgets('Space inside an open action menu cannot start PTT', (t) async {
-    t.view.devicePixelRatio = 1;
-    t.view.physicalSize = const Size(623, 400);
-    addTearDown(t.view.resetDevicePixelRatio);
-    addTearDown(t.view.resetPhysicalSize);
-    late JarvisController c;
-    await t.runAsync(() async {
-      c = await prepared();
-    });
-    c.current.tasks.add(
-      MediaTask(id: 'job', kind: 'video', prompt: 'fixture', args: {}),
-    );
-    await t.pumpWidget(MaterialApp(home: VoicePage(controller: c)));
-    await t.pump();
-    await t.tap(find.byTooltip('更多通话操作'));
-    await t.pump();
-    await t.pump(const Duration(milliseconds: 120));
-    await t.sendKeyDownEvent(LogicalKeyboardKey.space);
-    await t.pump();
-    final held = c.voice.held;
-    JarvisActionMenu.closeOpen();
-    await t.sendKeyUpEvent(LogicalKeyboardKey.space);
-    await t.pumpWidget(const SizedBox());
-    await settleTask(t, c.voice.stop());
-    c.dispose();
-    expect(held, false);
-  });
   test('A playback drain cannot replace an active recognition retry hint with idle', () async {
     final h = VoiceHarness();
     await h.session.start(h.owner);

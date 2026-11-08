@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:jarvis_android/model/conversation.dart';
 import 'package:jarvis_android/model/media.dart';
 import 'package:jarvis_android/state/jarvis_controller.dart';
+import 'package:jarvis_android/ui/call_mode_toggle.dart';
 import 'package:jarvis_android/ui/jarvis_app.dart';
 import 'package:jarvis_android/ui/media_widgets.dart';
 import 'package:jarvis_android/ui/voice_page.dart';
@@ -18,7 +19,7 @@ const windows = [
 ];
 
 void main() {
-  testWidgets('Voice title stays centered with recovery and works actions', (
+  testWidgets('Every call button is reachable with recovery and works shown', (
     t,
   ) async {
     t.view.devicePixelRatio = 1;
@@ -49,11 +50,24 @@ void main() {
       t.view.physicalSize = size;
       await t.pumpWidget(MaterialApp(home: VoicePage(controller: c)));
       await t.pump();
-      expect(
-        t.getRect(find.byKey(const Key('voice-name'))).center.dx,
-        closeTo(size.width / 2, .01),
-      );
-      expect(find.byTooltip('结束语音通话').hitTestable(), findsOneWidget);
+      // The bar (or the side strip, held sideways) carries every button, none
+      // outside the window, none covered.
+      for (final key in [
+        'voice-minimize',
+        'voice-recover',
+        'voice-works',
+        'voice-name',
+        'voice-close',
+      ]) {
+        final finder = find.byKey(Key(key));
+        expect(finder.hitTestable(), findsOneWidget, reason: '$size $key');
+        final r = t.getRect(finder);
+        expect(r.left, greaterThanOrEqualTo(0), reason: '$size $key');
+        expect(r.right, lessThanOrEqualTo(size.width), reason: '$size $key');
+        expect(r.top, greaterThanOrEqualTo(0), reason: '$size $key');
+        expect(r.bottom, lessThanOrEqualTo(size.height), reason: '$size $key');
+      }
+      expect(find.byType(CallModeToggle).hitTestable(), findsOneWidget);
       expect(t.takeException(), isNull);
     }
     await t.pumpWidget(const SizedBox());

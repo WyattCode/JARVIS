@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
+import 'model/device_kind.dart';
 import 'net/jarvis_api.dart';
 import 'state/jarvis_controller.dart';
 import 'state/vault.dart';
@@ -8,8 +9,10 @@ import 'state/blobs.dart';
 import 'ui/jarvis_app.dart';
 import 'ui/startup_scene.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Foldable or straight: the layout depends on it from the first frame.
+  await DeviceKind.probe();
   const server = String.fromEnvironment(
     'JARVIS_SERVER',
     defaultValue: 'https://jarvis.odn.cc',
@@ -116,16 +119,20 @@ class _JarvisAppState extends State<JarvisApp> with WidgetsBindingObserver {
           surfaceContainerHighest: dark
               ? const Color(0xff242429)
               : const Color(0xffe8edeb),
-          onSurface: dark ? const Color(0xffededf1) : null,
-          onSurfaceVariant: dark ? const Color(0xffa1a1aa) : null,
-          onPrimary: dark ? const Color(0xff161619) : null,
+          onSurface: dark ? const Color(0xffededf1) : const Color(0xff171c1e),
+          onSurfaceVariant: dark
+              ? const Color(0xffa1a1aa)
+              : const Color(0xff3f484b),
+          onPrimary: dark ? const Color(0xff161619) : const Color(0xffffffff),
           // Neutral surfaces match src/voice/auth/theme.css; cyan stays an accent.
           secondary: dark ? const Color(0xffa8deeb) : null,
           onSecondary: dark ? const Color(0xff121214) : null,
           tertiary: dark ? const Color(0xff8ed4e5) : null,
           onTertiary: dark ? const Color(0xff121214) : null,
-          error: dark ? const Color(0xffff9b8c) : null,
-          errorContainer: dark ? const Color(0xff382c30) : null,
+          error: dark ? const Color(0xffff9b8c) : const Color(0xffba1a1a),
+          errorContainer: dark
+              ? const Color(0xff382c30)
+              : const Color(0xffffdad6),
           onErrorContainer: dark ? const Color(0xffffc0b1) : null,
           inverseSurface: dark ? const Color(0xffededf1) : null,
           onInverseSurface: dark ? const Color(0xff25252a) : null,
@@ -144,7 +151,7 @@ class _JarvisAppState extends State<JarvisApp> with WidgetsBindingObserver {
               ? const Color(0xffededf1)
               : const Color(0xff24454c),
           surfaceTint: dark ? Colors.transparent : null,
-          outline: dark ? const Color(0xff36363d) : null,
+          outline: dark ? const Color(0xff36363d) : const Color(0xff70797b),
           outlineVariant: dark
               ? const Color(0xff303036)
               : const Color(0xffdce3e1),

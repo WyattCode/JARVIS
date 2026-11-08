@@ -54,15 +54,18 @@ void main() {
       expect(c.settings.voices['tts'], 'b');
     },
   );
-  test('removed choice is replaced even when default revision was seen', () async {
-    final api = CatalogApi(), c = JarvisController(api, MemoryVault());
-    addTearDown(c.dispose);
-    await c.initialize();
-    await c.login('test', 'test');
-    c.settings.voices['tts'] = 'retired';
-    await c.refreshVoiceCatalog();
-    expect(c.settings.voices['tts'], 'a');
-  });
+  test(
+    'removed choice is replaced even when default revision was seen',
+    () async {
+      final api = CatalogApi(), c = JarvisController(api, MemoryVault());
+      addTearDown(c.dispose);
+      await c.initialize();
+      await c.login('test', 'test');
+      c.settings.voices['tts'] = 'retired';
+      await c.refreshVoiceCatalog();
+      expect(c.settings.voices['tts'], 'a');
+    },
+  );
   test(
     'failed or late refresh cannot replace a usable catalog after logout',
     () async {

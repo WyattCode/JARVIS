@@ -33,7 +33,7 @@ void main() {
     expect(h.session.expressing, true);
     h.audio.output.add({'type': 'playback', 'active': true});
     h.audio.output.add({'type': 'playback', 'active': false});
-    expect(h.session.status, '正在准备语音');
+    expect(h.session.status, '正在回复');
     expect(h.session.expressing, true);
     h.event({
       'type': 'response.done',
@@ -70,16 +70,24 @@ void main() {
       );
       await t.pumpWidget(host(c));
       await t.pumpAndSettle();
-      for (final tooltip in ['会话操作', '更多操作', '选择思考深度']) {
-        await t.tap(find.byTooltip(tooltip).first);
-        await t.pumpAndSettle();
-        expect(find.byType(MenuItemButton), findsWidgets);
+      // A row's menu (held), the bar's more menu and the effort menu: Back
+      // closes each before the page.
+      for (final tooltip in [null, '更多操作', '选择思考深度']) {
+        if (tooltip == null) {
+          await openConversationMenu(t);
+          expect(find.byType(PopupMenuItem<String>), findsWidgets);
+        } else {
+          await t.tap(find.byTooltip(tooltip).first);
+          await t.pumpAndSettle();
+          expect(find.byKey(const Key('action-menu-panel')), findsWidgets);
+        }
         expect(
           await Navigator.of(t.element(find.byType(JarvisHome))).maybePop(),
           true,
         );
         await t.pumpAndSettle();
-        expect(find.byType(MenuItemButton), findsNothing);
+        expect(find.byKey(const Key('action-menu-panel')), findsNothing);
+        expect(find.byType(PopupMenuItem<String>), findsNothing);
         expect(find.byType(JarvisHome), findsOneWidget);
       }
       final list = find.descendant(
@@ -106,7 +114,7 @@ void main() {
     },
   );
   testWidgets(
-    'Tall phone compact reactor and both labels are larger without crowding the transcript',
+    'A straight phone gets the foldable stage: the same reactor and labels, without crowding the transcript',
     (t) async {
       t.view.devicePixelRatio = 1;
       t.view.physicalSize = const Size(400, 869);
@@ -133,9 +141,9 @@ void main() {
         ),
       );
       await t.pump();
-      expect(t.widget<CoreAvatar>(find.byType(CoreAvatar)).size, 120);
-      expect(t.widget<Text>(find.text('正在说话')).style!.fontSize, 18);
-      expect(t.widget<Text>(find.text('随时可以打断我')).style!.fontSize, 14);
+      expect(t.widget<CoreAvatar>(find.byType(CoreAvatar)).size, 84);
+      expect(t.widget<Text>(find.text('正在说话')).style!.fontSize, 17);
+      expect(t.widget<Text>(find.text('随时可以打断我')).style!.fontSize, 12);
       expect(t.getSize(find.byKey(const Key('body'))).height, greaterThan(500));
       expect(t.takeException(), isNull);
       await t.pumpWidget(const SizedBox());

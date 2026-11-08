@@ -76,7 +76,7 @@ void main() {
       final middle = t.getRect(avatar);
       expect(middle.width, lessThan(opening.width));
       expect(middle.width, greaterThan(84));
-      await t.pump(const Duration(milliseconds: 320));
+      await t.pump(const Duration(milliseconds: 520));
       expect(t.getRect(avatar).width, closeTo(84, .1));
       expect(identical(state, t.state(find.byType(LoginScene))), true);
       expect(find.byType(LoginScene), findsOneWidget);

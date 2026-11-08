@@ -1,163 +1,265 @@
 import '../model/conversation.dart';
+import '../model/media.dart';
 
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
 import '../state/jarvis_controller.dart';
+import 'page_palette.dart';
+import 'picker_sheet.dart';
+import 'settings_widgets.dart';
 
+/// The voices of the speech engine in use, as a sheet: choose one, hear it,
+/// close. It opens at half the window's height and can be drawn up to the
+/// whole of it (the iOS sheet's medium and large detents).
 Future<void> showVoicePicker(BuildContext context, JarvisController c) async {
   unawaited(c.refreshVoiceCatalog());
   try {
-    await showModalBottomSheet<void>(
+    await showPickerSheet<void>(
       context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (context) => SafeArea(
-        child: ListenableBuilder(
-          listenable: c,
-          builder: (context, _) {
-            final engines = c.models.where((m) => m.kind == 'speech').toList();
-            final selected = engines
-                .where((m) => m.id == c.settings.speechModel)
-                .firstOrNull;
-            final rows = selected?.voices.length ?? 1;
-            final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
-            final desired =
-                76 + (engines.length > 1 ? 92 : 0) + rows * 80 * scale;
-            return SizedBox(
-              height: math.min(
-                MediaQuery.sizeOf(context).height * .78,
-                desired,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 8,
-                    ),
-                    child: Text(
-                      '选择音色',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                  ),
-                  if (engines.length > 1)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      child: DropdownButtonFormField<String>(
-                        style: Theme.of(context).textTheme.bodyLarge,
-                        borderRadius: BorderRadius.circular(16),
-                        dropdownColor: Theme.of(context)
-                            .colorScheme
-                            .surfaceContainerHigh,
-                        initialValue: selected?.id,
-                        isExpanded: true,
-                        decoration: const InputDecoration(labelText: '语音引擎'),
-                        items: [
-                          for (final m in engines)
-                            DropdownMenuItem(
-                              value: m.id,
-                              child: Text(
-                                displayModelName(m.name),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                        ],
-                        onChanged: (id) {
-                          if (id == null) return;
-                          final engine = engines.firstWhere((m) => m.id == id);
-                          c.changeSettings((s) {
-                            s.speechModel = id;
-                            s.voices.putIfAbsent(id, () => engine.defaultVoice);
-                          });
-                        },
-                      ),
-                    ),
-                  Expanded(
-                    child: ListView(
-                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 20),
-                      children: [
-                        if (selected == null)
-                          const ListTile(title: Text('请在设置中选择可用语音引擎')),
-                        if (selected != null)
-                          for (final v in selected.voices)
-                            ListTile(
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14),
-                              ),
-                              selected: c.settings.voices[selected.id] == v.id,
-                              selectedColor: Theme.of(context)
-                                  .colorScheme
-                                  .onSurface,
-                              selectedTileColor: Theme.of(context)
-                                  .colorScheme
-                                  .surfaceContainerHigh,
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                              ),
-                              leading: SizedBox.square(
-                                dimension: 48,
-                                child: Center(
-                                  child: Icon(
-                                    c.settings.voices[selected.id] == v.id
-                                        ? Icons.radio_button_checked
-                                        : Icons.radio_button_off,
-                                    size: 22,
-                                  ),
-                                ),
-                              ),
-                              title: Text(v.name),
-                              subtitle: v.description.isEmpty
-                                  ? null
-                                  : Text(v.description),
-                              onTap: () => c.changeSettings(
-                                (s) => s.voices[selected.id] = v.id,
-                              ),
-                              trailing: IconButton(
-                                tooltip:
-                                    c.voice.previewing &&
-                                        c.voice.previewVoice == v.id
-                                    ? '停止试听'
-                                    : '试听 ${v.name}',
-                                icon: Icon(
-                                  c.voice.previewing &&
-                                          c.voice.previewVoice == v.id
-                                      ? Icons.stop_circle_outlined
-                                      : Icons.volume_up_outlined,
-                                  size: 22,
-                                ),
-                                onPressed: () =>
-                                    c.voice.previewing &&
-                                        c.voice.previewVoice == v.id
-                                    ? c.voice.stopPreview()
-                                    : c.voice.playPreview(v, selected.id),
-                              ),
-                            ),
-                        if (c.voice.error != null)
-                          Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Text(
-                              c.voice.error!,
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.error,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        ),
+      builder: (context, scroll) => ListenableBuilder(
+        listenable: Listenable.merge([c, c.voice]),
+        builder: (context, _) => VoicePickerBody(c: c, scroll: scroll),
       ),
     );
   } finally {
     if (c.voice.previewing) unawaited(c.voice.stopPreview());
+  }
+}
+
+/// What the voice sheet holds: a grabber, the title, the engine (when there is
+/// more than one) and the voices of the engine in one card.
+class VoicePickerBody extends StatelessWidget {
+  const VoicePickerBody({super.key, required this.c, required this.scroll});
+  final JarvisController c;
+  final ScrollController scroll;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = PagePalette.of(context);
+    final engines = c.models.where((m) => m.kind == 'speech').toList();
+    final selected = engines
+        .where((m) => m.id == c.settings.speechModel)
+        .firstOrNull;
+    final error = c.voice.error;
+    return ListView(
+      key: const Key('voice-picker'),
+      controller: scroll,
+      padding: EdgeInsets.zero,
+      children: [
+        const PickerGrabber(),
+        const PickerTitle('选择音色'),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (engines.isEmpty)
+                Text(
+                  '请在设置中选择可用语音引擎',
+                  style: TextStyle(color: p.onSurfaceVariant),
+                )
+              else ...[
+                if (engines.length > 1) ...[
+                  PageCard(
+                    key: const Key('voice-engine-row'),
+                    child: PickerRow<String>(
+                      label: '语音引擎',
+                      value: selected?.id,
+                      options: [
+                        for (final m in engines)
+                          (m.id, displayModelName(m.name)),
+                      ],
+                      onSelected: (id) {
+                        final engine = engines.firstWhere((m) => m.id == id);
+                        c.changeSettings((s) {
+                          s.speechModel = id;
+                          s.voices.putIfAbsent(id, () => engine.defaultVoice);
+                        });
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
+                if (selected == null)
+                  Text(
+                    '请在设置中选择可用语音引擎',
+                    style: TextStyle(color: p.onSurfaceVariant),
+                  )
+                else
+                  PageCard(
+                    key: const Key('voice-list'),
+                    child: Column(
+                      children: [
+                        for (var i = 0; i < selected.voices.length; i++) ...[
+                          if (i > 0)
+                            Divider(
+                              height: .7,
+                              thickness: .7,
+                              indent: 16,
+                              color: p.divider,
+                            ),
+                          VoiceRow(
+                            key: ValueKey('voice-${selected.voices[i].id}'),
+                            voice: selected.voices[i],
+                            selected:
+                                c.settings.voices[selected.id] ==
+                                selected.voices[i].id,
+                            loading:
+                                c.voice.previewing &&
+                                c.voice.previewVoice == selected.voices[i].id &&
+                                !c.voice.speaking,
+                            playing:
+                                c.voice.previewing &&
+                                c.voice.previewVoice == selected.voices[i].id &&
+                                c.voice.speaking,
+                            select: () => c.changeSettings(
+                              (s) =>
+                                  s.voices[selected.id] = selected.voices[i].id,
+                            ),
+                            play: () =>
+                                c.voice.previewing &&
+                                    c.voice.previewVoice ==
+                                        selected.voices[i].id
+                                ? c.voice.stopPreview()
+                                : c.voice.playPreview(
+                                    selected.voices[i],
+                                    selected.id,
+                                  ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                if (error != null && selected != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 14),
+                    child: Text(
+                      error,
+                      key: const Key('voice-picker-error'),
+                      style: TextStyle(fontSize: 13, color: p.error),
+                    ),
+                  ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// A voice in the card: a gutter with a check for the voice in use, its name
+/// over its description, and a round button to hear it.
+class VoiceRow extends StatelessWidget {
+  const VoiceRow({
+    super.key,
+    required this.voice,
+    required this.selected,
+    required this.loading,
+    required this.playing,
+    required this.select,
+    required this.play,
+  });
+  final VoiceInfo voice;
+  final bool selected, loading, playing;
+  final VoidCallback select;
+  final VoidCallback play;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = PagePalette.of(context);
+    final stopping = playing || loading;
+    return Semantics(
+      container: true,
+      selected: selected,
+      child: Row(
+        children: [
+          Expanded(
+            child: InkWell(
+              onTap: select,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 15, 0, 15),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 32,
+                      child: AnimatedOpacity(
+                        duration: const Duration(milliseconds: 200),
+                        opacity: selected ? 1 : 0,
+                        child: Icon(
+                          Icons.check,
+                          key: ValueKey('voice-check-${voice.id}'),
+                          size: 16,
+                          color: p.accent,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            voice.name,
+                            style: TextStyle(fontSize: 16, color: p.onSurface),
+                          ),
+                          if (voice.description.isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              voice.description,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: p.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: Tooltip(
+              message: stopping ? '停止试听 ${voice.name}' : '试听 ${voice.name}',
+              child: Material(
+                color: p.accent.withValues(alpha: .14),
+                shape: const CircleBorder(),
+                clipBehavior: Clip.antiAlias,
+                child: InkResponse(
+                  key: ValueKey('voice-preview-${voice.id}'),
+                  onTap: play,
+                  child: SizedBox.square(
+                    dimension: 44,
+                    child: Center(
+                      child: loading
+                          ? SizedBox.square(
+                              dimension: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: p.accent,
+                              ),
+                            )
+                          : Icon(
+                              playing
+                                  ? Icons.stop_rounded
+                                  : Icons.play_arrow_rounded,
+                              size: 20,
+                              color: p.accent,
+                            ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// The glyph starts at the reply text edge while the full target stays 48dp.
+/// The glyph starts at the reply text edge while the full target stays 44dp.
 class ReplyActionButton extends StatelessWidget {
   const ReplyActionButton({
     super.key,

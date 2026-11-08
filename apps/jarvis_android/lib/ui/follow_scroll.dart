@@ -60,6 +60,19 @@ class FollowScrollController extends ScrollController {
     followLatest();
   }
 
+  /// The way back to the newest words: it runs there over a quarter of a
+  /// second instead of jumping.
+  Future<void> animateToLatest() async {
+    _setFollowing(true);
+    if (_closed || !hasClients) return;
+    await animateTo(
+      position.maxScrollExtent,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+    followLatest();
+  }
+
   void followLatest() {
     if (_closed || !_following || _scheduled) return;
     _scheduled = true;

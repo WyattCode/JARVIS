@@ -100,8 +100,14 @@ void main() {
       final fields = find.byType(TextField);
       await t.enterText(fields.at(0), 'test');
       await t.enterText(fields.at(1), 'not-real');
-      expect(t.getRect(find.byKey(const ValueKey('login-brand-row'))).top, closeTo(58, .1));
-      expect(t.getSize(find.byKey(const ValueKey('login-reactor-size'))).height, greaterThan(130));
+      expect(
+        t.getRect(find.byKey(const ValueKey('login-brand-row'))).top,
+        closeTo(58, .1),
+      );
+      expect(
+        t.getSize(find.byKey(const ValueKey('login-reactor-size'))).height,
+        greaterThan(130),
+      );
       final fieldSize = t.getSize(fields.first);
       for (final ime in [0.0, 284.0, 320.0]) {
         t.view.viewInsets = FakeViewPadding(bottom: ime);
@@ -114,10 +120,21 @@ void main() {
           lessThanOrEqualTo(623 - (ime > 0 ? ime : 20)),
           reason: 'submit visible with IME=$ime',
         );
-        expect(t.getSize(fields.first), fieldSize, reason: 'IME must not shrink account field');
-        expect(t.getSize(fields.at(1)).height, fieldSize.height, reason: 'Password keeps the same field height');
+        expect(
+          t.getSize(fields.first),
+          fieldSize,
+          reason: 'IME must not shrink account field',
+        );
+        expect(
+          t.getSize(fields.at(1)).height,
+          fieldSize.height,
+          reason: 'Password keeps the same field height',
+        );
         final formSide = t.getRect(fields.at(0)).left;
-        expect(623 - (ime > 0 ? ime : 20) - t.getRect(button).bottom, closeTo(formSide, .1));
+        expect(
+          623 - (ime > 0 ? ime : 20) - t.getRect(button).bottom,
+          closeTo(formSide, .1),
+        );
         expect(t.getRect(fields.at(0)).top, greaterThanOrEqualTo(46));
         expect(
           t.getRect(fields.at(1)).bottom,
@@ -200,7 +217,10 @@ void main() {
             reason: '$size/IME=$ime',
           );
           if (size.width > size.height && ime == 0) {
-            expect(t.getRect(find.byKey(const ValueKey('login-brand-row'))).top, closeTo(46 + 20, .1));
+            expect(
+              t.getRect(find.byKey(const ValueKey('login-brand-row'))).top,
+              closeTo(46 + 20, .1),
+            );
           }
           final scroll = Scrollable.of(t.element(find.byType(TextField).first))
               .position;

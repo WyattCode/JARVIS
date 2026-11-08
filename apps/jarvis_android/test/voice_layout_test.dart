@@ -198,7 +198,7 @@ void main() {
       });
       await t.pumpWidget(host(VoicePage(controller: c), scale: 1.5));
       await t.pump();
-      await t.tap(find.text('Atlas'));
+      await t.tap(find.byKey(const Key('voice-name')));
       await t.pumpAndSettle();
       expect(find.text('选择音色'), findsOneWidget);
       expect(t.takeException(), isNull);

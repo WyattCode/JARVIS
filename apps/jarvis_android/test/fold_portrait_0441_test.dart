@@ -33,9 +33,11 @@ void main() {
         t.view.viewInsets = const FakeViewPadding(bottom: 260);
         await t.pump();
         await t.pump(const Duration(milliseconds: 400));
+        // With the keyboard up the box is wider: 17 from each side, not 32, and
+        // without the narrowing of the upright inner display (as on iOS).
         expect(
           t.getRect(find.byKey(const Key('composer-frame'))).width,
-          closeTo(frame.width, .1),
+          closeTo(size.width - 17, .1),
         );
         expect(c.current.draft, '保留草稿');
         expect(t.takeException(), isNull);

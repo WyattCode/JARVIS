@@ -42,12 +42,13 @@ void main() {
     );
     c.notifyDraftSuggestion();
     await t.pump(const Duration(milliseconds: 200));
-    expect(find.text('生成作品'), findsNothing);
+    expect(find.text('作品'), findsNothing);
     allowed.value = true;
     await t.pump();
+    await t.pump(workPresentDelay);
     await t.pump(const Duration(milliseconds: 400));
     await t.pump(const Duration(milliseconds: 300));
-    expect(find.text('生成作品'), findsOneWidget);
+    expect(find.text('作品'), findsOneWidget);
     expect(t.takeException(), isNull);
     await t.pumpWidget(const SizedBox());
     allowed.dispose();
@@ -80,11 +81,11 @@ void main() {
     c.notifyDraftSuggestion();
     await t.pump(const Duration(milliseconds: 200));
     await t.pump(const Duration(milliseconds: 300));
-    expect(find.text('生成作品'), findsNothing);
+    expect(find.text('作品'), findsNothing);
     c.current.tasks.add(task);
     c.notifyDraftSuggestion();
     await t.pump(const Duration(milliseconds: 300));
-    expect(find.text('生成作品'), findsNothing);
+    expect(find.text('作品'), findsNothing);
     await t.pumpWidget(const SizedBox());
     c.dispose();
   });
@@ -123,12 +124,13 @@ void main() {
     );
     c.notifyDraftSuggestion();
     await t.pump(const Duration(milliseconds: 200));
-    expect(find.text('生成作品'), findsNothing);
+    expect(find.text('作品'), findsNothing);
     JarvisActionMenu.closeOpen();
     await t.pump();
+    await t.pump(workPresentDelay);
     await t.pump(const Duration(milliseconds: 400));
     await t.pump(const Duration(milliseconds: 300));
-    expect(find.text('生成作品'), findsOneWidget);
+    expect(find.text('作品'), findsOneWidget);
     expect(t.takeException(), isNull);
     await t.pumpWidget(const SizedBox());
     c.dispose();
@@ -172,15 +174,16 @@ void main() {
       );
       c.notifyDraftSuggestion();
       await t.pump(const Duration(milliseconds: 200));
-      expect(find.text('生成作品'), findsNothing);
+      expect(find.text('作品'), findsNothing);
       if (guard == 'recording') {
         c.voice.held = false;
       } else {
         navigator.pop();
       }
+      await t.pump(workPresentDelay);
       await t.pump(const Duration(milliseconds: 400));
       await t.pump(const Duration(milliseconds: 350));
-      expect(find.text('生成作品'), findsOneWidget);
+      expect(find.text('作品'), findsOneWidget);
       expect(t.takeException(), isNull);
       await t.pumpWidget(const SizedBox());
       c.dispose();
@@ -212,18 +215,20 @@ void main() {
         ),
       );
       await t.pump(const Duration(milliseconds: 200));
-      expect(find.text('生成作品'), findsNothing);
+      expect(find.text('作品'), findsNothing);
       final a = MediaTask(id: 'new', kind: 'video', prompt: 'new', args: {});
       c.current.tasks.add(a);
       c.notifyDraftSuggestion();
       await t.pump(const Duration(milliseconds: 200));
-      expect(find.text('生成作品'), findsNothing);
+      expect(find.text('作品'), findsNothing);
       a.status = 'completed';
       a.urls = ['https://example.test/new.mp4'];
       c.notifyDraftSuggestion();
       await t.pump(const Duration(milliseconds: 150));
+      expect(find.text('作品'), findsNothing, reason: 'waits a second');
+      await t.pump(workPresentDelay);
       await t.pump(const Duration(milliseconds: 300));
-      expect(find.text('生成作品'), findsOneWidget);
+      expect(find.text('作品'), findsOneWidget);
       expect(t.widget<MediaCard>(find.byType(MediaCard).first).task.id, 'new');
       final b = MediaTask(
         id: 'new2',
@@ -236,13 +241,14 @@ void main() {
       c.current.tasks.add(b);
       c.notifyDraftSuggestion();
       await t.pump(const Duration(milliseconds: 200));
-      expect(find.text('生成作品'), findsOneWidget);
-      Navigator.of(t.element(find.text('生成作品'))).pop();
+      expect(find.text('作品'), findsOneWidget);
+      await t.pump(workPresentDelay);
+      Navigator.of(t.element(find.text('作品'))).pop();
       await t.pump();
       await t.pump(const Duration(milliseconds: 400));
       c.notifyDraftSuggestion();
       await t.pump(const Duration(milliseconds: 400));
-      expect(find.text('生成作品'), findsNothing);
+      expect(find.text('作品'), findsNothing);
       expect(t.takeException(), isNull);
       await t.pumpWidget(const SizedBox());
       c.dispose();

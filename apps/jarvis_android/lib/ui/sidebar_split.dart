@@ -20,7 +20,12 @@ class SidebarSplit extends StatefulWidget {
     required this.onChanged,
     required this.child,
     required this.content,
+    this.grip = true,
   });
+
+  /// False where the list cannot be folded away (half-folded: it has its own
+  /// screen), so there is no grip to drag and no gesture area to exclude.
+  final bool grip;
   final double width;
   final bool visible;
   final Duration duration;
@@ -110,9 +115,11 @@ class _SidebarSplitState extends State<SidebarSplit>
   void didUpdateWidget(SidebarSplit oldWidget) {
     super.didUpdateWidget(oldWidget);
     motion.duration = widget.duration;
+    // A width that is itself moving (see SidebarWidthTransition) changes at
+    // every frame; that must not restart the open/close motion each time.
     if (oldWidget.visible != widget.visible ||
-        oldWidget.width != widget.width ||
-        oldWidget.duration != widget.duration) {
+        oldWidget.duration != widget.duration ||
+        (oldWidget.width != widget.width && dragging)) {
       dragging = false;
       settle(widget.visible);
     }
@@ -162,7 +169,7 @@ class _SidebarSplitState extends State<SidebarSplit>
                                 ? Theme.of(context)
                                       .colorScheme
                                       .surfaceContainerLow
-                                : Theme.of(context).colorScheme.surface,
+                                : Colors.white,
                             child: widget.child,
                           ),
                         ),
@@ -179,91 +186,91 @@ class _SidebarSplitState extends State<SidebarSplit>
               ),
             ],
           ),
-          Positioned(
-            left: widget.width * motion.value,
-            top: 0,
-            bottom: 0,
-            width: 48,
-            child: Center(
-              child: FocusableActionDetector(
-                key: gripKey,
-                mouseCursor: SystemMouseCursors.resizeLeftRight,
-                onShowFocusHighlight: (value) =>
-                    setState(() => focused = value),
-                shortcuts: const {
-                  SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
-                  SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
-                  SingleActivator(LogicalKeyboardKey.arrowLeft):
-                      _SetSidebarIntent(false),
-                  SingleActivator(LogicalKeyboardKey.arrowRight):
-                      _SetSidebarIntent(true),
-                },
-                actions: {
-                  ActivateIntent: CallbackAction<ActivateIntent>(
-                    onInvoke: (_) {
-                      finish(!widget.visible);
-                      return null;
-                    },
-                  ),
-                  _SetSidebarIntent: CallbackAction<_SetSidebarIntent>(
-                    onInvoke: (intent) {
-                      finish(intent.visible);
-                      return null;
-                    },
-                  ),
-                },
-                child: Semantics(
-                  button: true,
-                  label: widget.visible ? '收起会话侧栏' : '展开会话侧栏',
-                  hint: '也可左右拖动',
-                  onTap: () => finish(!widget.visible),
-                  child: GestureDetector(
-                    key: const Key('pane-grip'),
-                    behavior: HitTestBehavior.opaque,
-                    excludeFromSemantics: true,
+          if (widget.grip)
+            Positioned(
+              left: widget.width * motion.value,
+              top: 0,
+              bottom: 0,
+              width: 48,
+              child: Center(
+                child: FocusableActionDetector(
+                  key: gripKey,
+                  mouseCursor: SystemMouseCursors.resizeLeftRight,
+                  onShowFocusHighlight: (value) =>
+                      setState(() => focused = value),
+                  shortcuts: const {
+                    SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+                    SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+                    SingleActivator(LogicalKeyboardKey.arrowLeft):
+                        _SetSidebarIntent(false),
+                    SingleActivator(LogicalKeyboardKey.arrowRight):
+                        _SetSidebarIntent(true),
+                  },
+                  actions: {
+                    ActivateIntent: CallbackAction<ActivateIntent>(
+                      onInvoke: (_) {
+                        finish(!widget.visible);
+                        return null;
+                      },
+                    ),
+                    _SetSidebarIntent: CallbackAction<_SetSidebarIntent>(
+                      onInvoke: (intent) {
+                        finish(intent.visible);
+                        return null;
+                      },
+                    ),
+                  },
+                  child: Semantics(
+                    button: true,
+                    label: widget.visible ? '收起会话侧栏' : '展开会话侧栏',
+                    hint: '也可左右拖动',
                     onTap: () => finish(!widget.visible),
-                    onHorizontalDragStart: (_) {
-                      motion.stop();
-                      setState(() => dragging = true);
-                    },
-                    onHorizontalDragUpdate: (event) {
-                      motion.value =
-                          (motion.value + event.delta.dx / widget.width).clamp(
-                            0.0,
-                            1.0,
-                          );
-                    },
-                    onHorizontalDragEnd: (event) {
-                      final velocity = event.primaryVelocity ?? 0;
-                      finish(
-                        velocity.abs() > 300
-                            ? velocity > 0
-                            : motion.value >= .5,
-                      );
-                    },
-                    onHorizontalDragCancel: () {
-                      setState(() => dragging = false);
-                      settle(widget.visible);
-                    },
-                    child: SizedBox(
-                      width: 48,
-                      height: 80,
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Padding(
-                          padding: const EdgeInsets.only(left: 10),
-                          child: Container(
-                            key: const Key('pane-grip-thumb'),
-                            width: 4,
-                            height: 44,
-                            decoration: BoxDecoration(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant
-                                  .withValues(
-                                    alpha: dragging || focused ? .8 : .4,
-                                  ),
-                              borderRadius: BorderRadius.circular(4),
+                    child: GestureDetector(
+                      key: const Key('pane-grip'),
+                      behavior: HitTestBehavior.opaque,
+                      excludeFromSemantics: true,
+                      onTap: () => finish(!widget.visible),
+                      onHorizontalDragStart: (_) {
+                        motion.stop();
+                        setState(() => dragging = true);
+                      },
+                      onHorizontalDragUpdate: (event) {
+                        motion.value =
+                            (motion.value + event.delta.dx / widget.width)
+                                .clamp(0.0, 1.0);
+                      },
+                      onHorizontalDragEnd: (event) {
+                        final velocity = event.primaryVelocity ?? 0;
+                        finish(
+                          velocity.abs() > 300
+                              ? velocity > 0
+                              : motion.value >= .5,
+                        );
+                      },
+                      onHorizontalDragCancel: () {
+                        setState(() => dragging = false);
+                        settle(widget.visible);
+                      },
+                      child: SizedBox(
+                        width: 48,
+                        height: 80,
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Padding(
+                            padding: const EdgeInsets.only(left: 10),
+                            child: Container(
+                              key: const Key('pane-grip-thumb'),
+                              width: 4,
+                              height: 44,
+                              decoration: BoxDecoration(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant
+                                    .withValues(
+                                      alpha: dragging || focused ? .8 : .4,
+                                    ),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
                             ),
                           ),
                         ),
@@ -273,9 +280,81 @@ class _SidebarSplitState extends State<SidebarSplit>
                 ),
               ),
             ),
-          ),
         ],
       );
     },
+  );
+}
+
+/// Carries the docked list's width to its new value when the hinge opens or
+/// bends (the list and the chat take their halves, or give them back), instead
+/// of jumping. Any other change of width (a turn, a resize) is immediate, as it
+/// always was, and so is every change with animations turned off.
+class SidebarWidthTransition extends StatefulWidget {
+  const SidebarWidthTransition({
+    super.key,
+    required this.width,
+    required this.split,
+    required this.builder,
+    this.duration = const Duration(milliseconds: 420),
+  });
+
+  /// Where the width is going.
+  final double width;
+
+  /// Half-folded (the list has its own screen). A change of this is what
+  /// moves the width gradually.
+  final bool split;
+  final Duration duration;
+  final Widget Function(BuildContext context, double width) builder;
+
+  @override
+  State<SidebarWidthTransition> createState() => _SidebarWidthTransitionState();
+}
+
+class _SidebarWidthTransitionState extends State<SidebarWidthTransition>
+    with SingleTickerProviderStateMixin {
+  static const curve = Curves.easeOutCubic;
+  late final AnimationController motion = AnimationController(
+    vsync: this,
+    value: 1,
+  );
+  late double from = widget.width, to = widget.width;
+
+  double get current => from + (to - from) * curve.transform(motion.value);
+
+  @override
+  void didUpdateWidget(SidebarWidthTransition oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.width == widget.width && oldWidget.split == widget.split) {
+      return;
+    }
+    final bent = oldWidget.split != widget.split;
+    final still = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    if ((bent || motion.isAnimating) &&
+        !still &&
+        widget.duration > Duration.zero) {
+      // From wherever the width is now, so that a hinge that turns back in the
+      // middle of the motion does not jump either.
+      from = current;
+      to = widget.width;
+      motion.duration = widget.duration;
+      motion.forward(from: 0);
+    } else {
+      from = to = widget.width;
+      motion.value = 1;
+    }
+  }
+
+  @override
+  void dispose() {
+    motion.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: motion,
+    builder: (context, _) => widget.builder(context, current),
   );
 }

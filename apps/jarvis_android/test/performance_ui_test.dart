@@ -144,7 +144,8 @@ void main() {
       expect(rects[2].top, greaterThan(rects[0].bottom));
       expect(rects.every((r) => r.height >= 48), true);
       await t.tap(find.byKey(const ValueKey('starter-2')));
-      expect(c.current.draft, c.starters[2].prompt);
+      // A starter's prompt goes after what is written (on its own line).
+      expect(c.current.draft, endsWith(c.starters[2].prompt));
       expect(t.takeException(), isNull);
     }
     await t.pumpWidget(const SizedBox());

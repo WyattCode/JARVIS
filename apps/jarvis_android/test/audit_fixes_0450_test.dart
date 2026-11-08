@@ -42,13 +42,13 @@ void main() {
       c.notifyDraftSuggestion();
       await t.pump(const Duration(milliseconds: 200));
       await t.pump();
-      expect(find.text('生成作品'), findsNothing);
+      expect(find.text('作品'), findsNothing);
       expect(find.byKey(const Key('completed-work-notice')), findsOneWidget);
       expect(focus.hasFocus, true);
       await t.tap(find.byKey(const Key('completed-work-notice')));
       await t.pump();
       await t.pump(const Duration(milliseconds: 400));
-      expect(find.text('生成作品'), findsOneWidget);
+      expect(find.text('作品'), findsOneWidget);
       expect(text.text, '未发送草稿');
       await t.pumpWidget(const SizedBox());
       focus.dispose();
@@ -79,14 +79,19 @@ void main() {
       c.notifyDraftSuggestion();
       await t.pump(const Duration(milliseconds: 200));
       await t.pump();
-      expect(find.text('生成作品'), findsNothing);
+      expect(find.text('作品'), findsNothing);
       expect(find.textContaining('另一个会话'), findsOneWidget);
       final selected = c.selectedId;
       await t.tap(find.byKey(const Key('completed-work-notice')));
       await t.pump();
       await t.pump(const Duration(milliseconds: 400));
-      expect(find.byType(MediaCard), findsOneWidget);
-      expect(t.widget<MediaCard>(find.byType(MediaCard)).task.id, 'background');
+      // The sheet lists the works of every conversation; the one that has
+      // just finished stands first.
+      expect(find.byType(MediaCard), findsNWidgets(2));
+      expect(
+        t.widget<MediaCard>(find.byType(MediaCard).first).task.id,
+        'background',
+      );
       expect(c.selectedId, selected);
       await t.pumpWidget(const SizedBox());
       c.dispose();
@@ -116,12 +121,26 @@ void main() {
       c.current.messages.last.text += '新回复';
       c.notifyDraftSuggestion();
       await t.pump();
-      expect(find.text('有新回复 · 回到最新'), findsOneWidget);
+      // The button says there is a new reply (to a reader of the screen).
+      expect(
+        t
+            .widget<Semantics>(
+              find
+                  .descendant(
+                    of: find.byKey(const Key('return-to-latest')),
+                    matching: find.byType(Semantics),
+                  )
+                  .first,
+            )
+            .properties
+            .label,
+        '有新回复，回到底部',
+      );
       c.current.tasks.add(ready('read'));
       c.notifyDraftSuggestion();
       await t.pump(const Duration(milliseconds: 200));
       await t.pump();
-      expect(find.text('生成作品'), findsNothing);
+      expect(find.text('作品'), findsNothing);
       expect(find.byKey(const Key('completed-work-notice')), findsOneWidget);
       expect(
         t.getRect(find.byKey(const Key('completed-work-notice'))).bottom,
@@ -133,7 +152,7 @@ void main() {
       expect(c.readingHistoryId, isNull);
       await t.pump(const Duration(milliseconds: 400));
       await t.pump(const Duration(milliseconds: 400));
-      expect(find.text('生成作品'), findsOneWidget);
+      expect(find.text('作品'), findsOneWidget);
       await t.pumpWidget(const SizedBox());
       c.dispose();
     },
@@ -164,7 +183,7 @@ void main() {
       await t.pump();
       await t.pump(const Duration(milliseconds: 600));
       expect(find.byKey(const Key('completed-work-notice')), findsNothing);
-      expect(find.text('生成作品'), findsNothing);
+      expect(find.text('作品'), findsNothing);
       await t.pumpWidget(const SizedBox());
       c.dispose();
     },
@@ -193,9 +212,14 @@ void main() {
       other.tasks.add(ready('new-other'));
       c.notifyDraftSuggestion();
       await t.pump(const Duration(milliseconds: 200));
-      expect(find.byType(MediaCard), findsOneWidget);
-      expect(t.widget<MediaCard>(find.byType(MediaCard)).task.id, 'old');
-      Navigator.of(t.element(find.text('生成作品'))).pop();
+      // The sheet lists every conversation's works, the new one first; the
+      // reminder for it is still kept for after the sheet closes.
+      expect(find.byType(MediaCard), findsNWidgets(2));
+      expect(
+        t.widget<MediaCard>(find.byType(MediaCard).first).task.id,
+        'new-other',
+      );
+      Navigator.of(t.element(find.text('作品'))).pop();
       await t.pump();
       await t.pump(const Duration(milliseconds: 400));
       await t.pump(const Duration(milliseconds: 400));

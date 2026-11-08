@@ -76,14 +76,16 @@ void main() {
       final frame = t.getRect(find.byKey(const Key('composer-frame')));
       final bottomSpace = outer.bottom - frame.bottom;
       final pane = outer.width;
+      // The keyboard is up here: a foldable's box is 17 in from each side (not
+      // 32), and the upright inner display's narrowing is gone.
       final sideSpace = size.width >= 600 && size.height > size.width
-          ? (pane - (pane - 32) * .76) / 2
+          ? (pane - (pane - 17)) / 2
           : size.width == 425
-          ? 16.0
+          ? 8.5
           : size.width == 860
-          ? (pane - (pane - 32) * .9215) / 2
+          ? (pane - (pane - 17) * .9215) / 2
           : size.width == 623
-          ? (pane - (size.height - 64) * size.width / size.height * .9) / 2
+          ? (pane - (size.height - 32 - 17) * size.width / size.height * .9) / 2
           : bottomSpace;
       expect(frame.left - outer.left, closeTo(sideSpace, .01));
       expect(outer.right - frame.right, closeTo(sideSpace, .01));
@@ -122,7 +124,7 @@ void main() {
     await t.tap(find.byTooltip('展开会话'));
     await t.pumpAndSettle();
     expect(
-      find.byKey(const Key('new-conversation')).hitTestable(),
+      find.byKey(const ValueKey('sidebar-brand-row')).hitTestable(),
       findsOneWidget,
     );
     expect(t.takeException(), isNull);

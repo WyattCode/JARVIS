@@ -7,7 +7,7 @@ import 'package:jarvis_android/ui/jarvis_app.dart';
 import 'package:jarvis_android/ui/login_art.dart';
 import 'package:jarvis_android/ui/startup_scene.dart';
 import 'package:jarvis_android/ui/voice_page.dart';
-import 'package:jarvis_android/ui/voice_mode_selector.dart';
+import 'package:jarvis_android/ui/call_mode_toggle.dart';
 
 import 'support.dart';
 import 'voice_support.dart';
@@ -144,7 +144,7 @@ void main() {
     },
   );
   testWidgets(
-    'Large text switches mode controls to full-width rows; accessible recording starts and ends',
+    'Large text keeps the talk button and the mode switch usable; accessible recording starts and ends',
     (t) async {
       t.view.devicePixelRatio = 1;
       t.view.physicalSize = const Size(320, 700);
@@ -170,12 +170,10 @@ void main() {
           home: VoicePage(controller: c),
         ),
       );
-      expect(find.byType(VoiceModeSelector), findsOneWidget);
+      expect(find.byType(CallModeToggle).hitTestable(), findsOneWidget);
       expect(
-        t.getTopLeft(find.byKey(const ValueKey('voice-mode-vad'))).dy,
-        greaterThan(
-          t.getBottomRight(find.byKey(const ValueKey('voice-mode-ptt'))).dy,
-        ),
+        find.byKey(const Key('voice-hold-surface')).hitTestable(),
+        findsOneWidget,
       );
       final target = find.byWidgetPredicate(
         (w) => w is Semantics && w.properties.label == '按住说话',

@@ -79,6 +79,11 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         val binary = flutterEngine.dartExecutor.binaryMessenger
         MethodChannel(binary, "cc.odn.jarvis/layout").setMethodCallHandler { call, result ->
+            if (call.method == "foldable") {
+                // A folding phone has a hinge sensor; a straight phone does not.
+                result.success(packageManager.hasSystemFeature("android.hardware.sensor.hinge_angle"))
+                return@setMethodCallHandler
+            }
             if (call.method != "gripExclusion") { result.notImplemented(); return@setMethodCallHandler }
             if (Build.VERSION.SDK_INT >= 29) {
                 val bounds = call.arguments as? List<*>
@@ -127,6 +132,7 @@ class MainActivity : FlutterActivity() {
                         outputIo.execute { try { player.feed(epoch, bytes); main.post { result.success(null) } } catch (_: Exception) { main.post { result.error("audio_failed", "音频输出失败", null) } } }
                     }
                     "clear" -> { player.clear(call.argument<Int>("epoch")!!); result.success(null) }
+                    "setPaused" -> { player.setPaused(call.argument<Boolean>("paused") == true); result.success(null) }
                     "inputError" -> { emit(mapOf("type" to "input_error")); result.success(null) }
                     "stop" -> { endAudio(); result.success(null) }
                     else -> result.notImplemented()

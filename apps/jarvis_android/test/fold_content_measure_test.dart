@@ -63,7 +63,7 @@ void main() {
     },
   );
   testWidgets(
-    'Fold open sidebar shares a header axis, matching card edges and current conversation title',
+    'Fold open sidebar bar shares the chat header\'s axis; cards match the box edges; the bar has no title',
     (t) async {
       t.view.devicePixelRatio = 1;
       t.view.physicalSize = const Size(860, 608);
@@ -73,27 +73,25 @@ void main() {
       await c.initialize();
       await t.pumpWidget(MaterialApp(home: JarvisHome(controller: c)));
       await t.pump();
-      final brand = t.getRect(find.byKey(const ValueKey('sidebar-brand-row')));
+      // The list's bar of round buttons stands level with the chat's own bar.
+      final bar = t.getRect(find.byKey(const Key('new-conversation')));
       final header = t.getRect(find.byKey(const ValueKey('chat-header-row')));
-      expect(brand.center.dy, closeTo(header.center.dy, .1));
+      expect(bar.center.dy, closeTo(header.center.dy, .1));
       final frame = t.getRect(find.byKey(const Key('composer-frame')));
       final left = t.getRect(find.byKey(const ValueKey('starter-0')));
       final right = t.getRect(find.byKey(const ValueKey('starter-1')));
       expect(left.left, closeTo(frame.left, .1));
       expect(right.right, closeTo(frame.right, .1));
-      final heading = find.byKey(const ValueKey('chat-heading-line'));
-      expect(
-        find.descendant(of: heading, matching: find.text(c.current.title)),
-        findsOneWidget,
-      );
-      expect(
-        find.descendant(of: heading, matching: find.text('JARVIS')),
-        findsNothing,
-      );
+      // The bar carries no title (as on iOS); the open conversation is named in
+      // the list.
+      expect(find.byKey(const ValueKey('chat-heading-line')), findsNothing);
       c.rename(c.current.id, '项目规划');
       await t.pump();
       expect(
-        find.descendant(of: heading, matching: find.text('项目规划')),
+        find.descendant(
+          of: find.byKey(const Key('conversation-list')),
+          matching: find.text('项目规划'),
+        ),
         findsOneWidget,
       );
       final scroll = Scrollable.of(

@@ -1,6 +1,7 @@
 import '../model/conversation.dart';
 
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
@@ -12,6 +13,7 @@ import '../state/attachments.dart';
 import '../state/backup.dart';
 import 'media_widgets.dart';
 import 'motion.dart';
+import 'page_palette.dart';
 import 'settings_widgets.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -22,6 +24,17 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
+  /// The side margin of the cards and of the section bar (iOS Metrics.cardMargin).
+  static const pageMargin = 14.0;
+
+  /// The settings page stands as two panes (the chat preview at the left, the
+  /// controls at the right) on a docked-list sized window: its shortest side
+  /// at least 600, wider than tall, and 760 usable.
+  static bool twoPaneFits(Size window, double usableWidth) =>
+      math.min(window.width, window.height) >= 600 &&
+      window.width > window.height &&
+      usableWidth >= 760;
+
   late final instructions = TextEditingController(
     text: widget.controller.settings.instructions,
   );
@@ -152,7 +165,7 @@ class _SettingsPageState extends State<SettingsPage> {
   );
 
   /// What the chat will look like with the current theme and text size: your messages in a bubble, the reply plain.
-  Widget preview(JarvisController c) {
+  Widget preview(JarvisController c, {bool collapsible = true}) {
     final colors = Theme.of(context).colorScheme;
     final size = c.settings.messageFontSize;
     Widget message(String text, {required bool mine}) => Align(
@@ -185,11 +198,12 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                 ),
               ),
-              IconButton(
-                tooltip: '收起实时预览',
-                onPressed: () => setState(() => previewExpanded = false),
-                icon: const Icon(Icons.chevron_left_rounded, size: 20),
-              ),
+              if (collapsible)
+                IconButton(
+                  tooltip: '收起实时预览',
+                  onPressed: () => setState(() => previewExpanded = false),
+                  icon: const Icon(Icons.chevron_left_rounded, size: 20),
+                ),
             ],
           ),
         ),
@@ -640,14 +654,11 @@ class _SettingsPageState extends State<SettingsPage> {
         final chips = ColoredBox(
           color: solid ? scaffold : scaffold.withValues(alpha: edge),
           child: Center(
-            child: ConstrainedBox(
-              // 720 of cards plus their 20 pt side margins, which the chips apply themselves.
-              constraints: const BoxConstraints(maxWidth: 760),
-              child: SettingsChips(
-                labels: chipLabels,
-                active: active,
-                onTap: jumpTo,
-              ),
+            child: SettingsChips(
+              labels: chipLabels,
+              active: active,
+              onTap: jumpTo,
+              margin: pageMargin,
             ),
           ),
         );
@@ -701,18 +712,19 @@ class _SettingsPageState extends State<SettingsPage> {
 
                     keyboardDismissBehavior:
                         ScrollViewKeyboardDismissBehavior.onDrag,
-                    padding: EdgeInsets.fromLTRB(20, 0, 20, 30),
-                    child: Center(
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 720),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: sections(
-                            c,
-                            inlinePreview: !wide,
-                            viewportHeight: viewport.maxHeight,
-                          ),
-                        ),
+                    padding: const EdgeInsets.fromLTRB(
+                      pageMargin,
+                      0,
+                      pageMargin,
+                      30,
+                    ),
+                    child: Column(
+                      key: const Key('settings-cards'),
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: sections(
+                        c,
+                        inlinePreview: !wide,
+                        viewportHeight: viewport.maxHeight,
                       ),
                     ),
                   ),
@@ -725,57 +737,85 @@ class _SettingsPageState extends State<SettingsPage> {
       );
       return Scaffold(
         appBar: AppBar(title: const Text('设置')),
-        body: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, box) {
-              // Android window constraints, independent of iPhone native fold reports.
-              final twoPane =
-                  box.maxWidth >= 840 &&
-                  box.maxWidth > box.maxHeight &&
-                  MediaQuery.viewInsetsOf(context).bottom == 0;
-              if (!twoPane) return controls(false);
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  AnimatedContainer(
-                    key: const Key('settings-preview-pane'),
-                    duration: motion(context, 180),
-                    curve: Curves.easeOutCubic,
-                    width: previewExpanded ? box.maxWidth * .4 : 52,
-                    child: LayoutBuilder(
-                      builder: (context, pane) {
-                        if (!previewExpanded || pane.maxWidth < 220) {
-                          return Align(
-                            alignment: Alignment.topCenter,
-                            child: IconButton.filledTonal(
-                              style: IconButton.styleFrom(
-                                minimumSize: const Size(44, 44),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
-                              ),
-                              tooltip: '展开实时预览',
-                              onPressed: () =>
-                                  setState(() => previewExpanded = true),
-                              icon: const Icon(
-                                Icons.view_sidebar_outlined,
-                                size: 20,
-                              ),
-                            ),
-                          );
-                        }
-                        return SingleChildScrollView(
-                          padding: const EdgeInsets.fromLTRB(20, 8, 20, 30),
-                          child: preview(c),
-                        );
-                      },
-                    ),
+        body: LayoutBuilder(
+          builder: (context, window) {
+            // Half-folded with the screens side by side: the preview has the
+            // left screen, the controls the right one, and nothing stands on
+            // the crease between them.
+            final split = PageFoldSplit.of(context, window);
+            if (split != null) {
+              return split.row(
+                SingleChildScrollView(
+                  key: const Key('settings-preview-screen'),
+                  padding: const EdgeInsets.fromLTRB(
+                    pageMargin,
+                    8,
+                    pageMargin,
+                    30,
                   ),
-                  Expanded(child: controls(true)),
-                ],
+                  child: preview(c, collapsible: false),
+                ),
+                controls(true),
+                key: const Key('settings-fold-split'),
               );
-            },
-          ),
+            }
+            return SafeArea(
+              child: LayoutBuilder(
+                builder: (context, box) {
+                  // Android window constraints, independent of iPhone native fold reports.
+                  final twoPane =
+                      twoPaneFits(MediaQuery.sizeOf(context), box.maxWidth) &&
+                      MediaQuery.viewInsetsOf(context).bottom == 0;
+                  if (!twoPane) return controls(false);
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      AnimatedContainer(
+                        key: const Key('settings-preview-pane'),
+                        duration: motion(context, 180),
+                        curve: Curves.easeOutCubic,
+                        width: previewExpanded ? box.maxWidth * .4 : 52,
+                        child: LayoutBuilder(
+                          builder: (context, pane) {
+                            if (!previewExpanded || pane.maxWidth < 220) {
+                              return Align(
+                                alignment: Alignment.topCenter,
+                                child: IconButton.filledTonal(
+                                  style: IconButton.styleFrom(
+                                    minimumSize: const Size(44, 44),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                    ),
+                                  ),
+                                  tooltip: '展开实时预览',
+                                  onPressed: () =>
+                                      setState(() => previewExpanded = true),
+                                  icon: const Icon(
+                                    Icons.view_sidebar_outlined,
+                                    size: 20,
+                                  ),
+                                ),
+                              );
+                            }
+                            return SingleChildScrollView(
+                              padding: const EdgeInsets.fromLTRB(
+                                pageMargin,
+                                8,
+                                pageMargin,
+                                30,
+                              ),
+                              child: preview(c),
+                            );
+                          },
+                        ),
+                      ),
+                      Expanded(child: controls(true)),
+                    ],
+                  );
+                },
+              ),
+            );
+          },
         ),
       );
     },

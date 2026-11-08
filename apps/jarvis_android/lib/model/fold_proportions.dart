@@ -1,10 +1,24 @@
 import 'dart:math' as math;
 
+import 'device_kind.dart';
+
 /// Shared logical proportions. Window shape is read before the IME consumes
 /// height; every child uses the same content pane rather than physical pixels.
 class FoldProportions {
-  static bool isFold(double w, double h) =>
-      math.min(w, h) >= 600 || math.max(w, h) / math.min(w, h) < 1.9;
+  /// A window that gets the foldable treatment. On a phone the system says
+  /// whether it folds (a folding phone: every window of it, outer display
+  /// included; a straight one: only a large window). Where that is not known
+  /// (tests) the window's own shape is guessed from.
+  static bool isFold(double w, double h) {
+    final foldable = DeviceKind.foldable;
+    if (foldable != null) return foldable || math.min(w, h) >= 600;
+    return math.min(w, h) >= 600 || math.max(w, h) / math.min(w, h) < 1.9;
+  }
+
+  /// The chat is laid out from [columns] (a straight phone has its own
+  /// rules there, as on iOS) whenever the kind of phone is known.
+  static bool usesColumns(double w, double h) =>
+      DeviceKind.foldable != null || isFold(w, h);
   static bool inner(double w, double h) => math.min(w, h) >= 600;
   static bool compactInput(double windowHeight, double keyboardInset) =>
       keyboardInset > 0 && windowHeight - keyboardInset < 220;
@@ -21,30 +35,52 @@ class FoldProportions {
     required bool dockedMode,
     required bool sidebarOpen,
     double? sidebarProgress,
+
+    /// The keyboard is up. A foldable's box is then wider (17 from each side,
+    /// not 32, and without the upright inner display's narrowing); the
+    /// messages stay as wide as they were at rest, so they do not wrap again
+    /// at every show and hide. A straight phone's box does not change.
+    bool keyboardUp = false,
   }) {
     final p = math.max(0.0, paneWidth);
     final base = math.max(0.0, p - 32);
-    double box, messages;
+    final wide = math.max(0.0, p - 17);
+    if (DeviceKind.foldable == false && !inner(windowWidth, windowHeight)) {
+      // A straight phone: a reading column of at most 720, the box 16 in from
+      // each side of it, the messages a little less wide than the column.
+      final reading = math.min(p, 720.0);
+      return FoldColumns(p, reading - 32, reading - 36);
+    }
+    double box, messages, composer;
     if (dockedMode) {
       final progress = (sidebarProgress ?? (sidebarOpen ? 1.0 : 0.0)).clamp(
         0.0,
         1.0,
       );
-      box = base * (foldedBox + (dockedBox - foldedBox) * progress);
+      final share = foldedBox + (dockedBox - foldedBox) * progress;
+      box = base * share;
       messages = box * messagesInBox;
+      composer = keyboardUp ? wide * share : box;
     } else if (inner(windowWidth, windowHeight)) {
       box = base * uprightBox;
       messages = box * messagesInBox;
+      composer = keyboardUp ? wide : box;
     } else if (windowWidth > windowHeight) {
       final strip = math.max(0.0, windowWidth - p);
-      final upright = math.max(0.0, windowHeight - strip - 32);
-      box = math.min(base, upright * windowWidth / windowHeight * .9);
+      double sideways(double margin) {
+        final upright = math.max(0.0, windowHeight - strip - margin);
+        return math.min(p - margin, upright * windowWidth / windowHeight * .9);
+      }
+
+      box = math.min(base, sideways(32));
       messages = box * .94;
+      composer = keyboardUp ? sideways(17) : box;
     } else {
       box = base;
       messages = math.min(math.max(0, p - 36), base * .95 * .95 * .98);
+      composer = keyboardUp ? wide : box;
     }
-    return FoldColumns(p, box, messages);
+    return FoldColumns(p, composer, messages);
   }
 
   /// A shared identity/transcript column; controls stay within it too.

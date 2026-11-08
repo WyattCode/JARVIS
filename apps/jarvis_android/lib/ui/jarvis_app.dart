@@ -4,9 +4,11 @@ import 'scroll_affordance.dart';
 import 'attachment_manager.dart';
 import 'action_menu.dart';
 import 'reply_action_button.dart';
+import 'message_parts.dart';
 
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -24,9 +26,12 @@ import 'status_page.dart';
 import 'voice_page.dart';
 import 'follow_scroll.dart';
 import 'sidebar_split.dart';
+import 'sidebar_list.dart';
 
 import '../model/adaptive_layout.dart';
+import '../model/device_kind.dart';
 import '../model/fold_proportions.dart';
+import '../model/fold_state.dart';
 import '../model/conversation.dart';
 import '../model/starters.dart';
 import '../state/jarvis_controller.dart';
@@ -569,7 +574,6 @@ class JarvisHome extends StatefulWidget {
 class _JarvisHomeState extends State<JarvisHome> {
   ({String text, Conversation? undo})? sidebarNotice;
   Timer? sidebarNoticeTimer;
-  final dismissGeneration = <String, int>{};
   bool? showDocked;
   bool drawerOpen = false;
   bool? lastDefault;
@@ -618,8 +622,15 @@ class _JarvisHomeState extends State<JarvisHome> {
             window.width >= 600 && window.height > window.width;
         final big = window.width < 600;
         final colors = Theme.of(context).colorScheme;
+        // As the iOS rename card: a large rounded card, a 22 title, a roomy
+        // rounded field with its count, and two buttons of equal width.
+        final dark = colors.brightness == Brightness.dark;
         return AlertDialog(
           key: const Key('rename-dialog'),
+          backgroundColor: dark ? const Color(0xff121214) : Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(34),
+          ),
           insetPadding: big
               ? const EdgeInsets.symmetric(horizontal: 22, vertical: 24)
               : const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
@@ -628,69 +639,98 @@ class _JarvisHomeState extends State<JarvisHome> {
               : innerPortrait
               ? const BoxConstraints(minWidth: 360, maxWidth: 420)
               : null,
-          contentPadding: big ? const EdgeInsets.fromLTRB(24, 16, 24, 8) : null,
-          titlePadding: big ? const EdgeInsets.fromLTRB(24, 24, 24, 0) : null,
+          contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+          titlePadding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
           title: Text(
             '重命名会话',
-            style: big
-                ? TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w700,
-                    color: colors.onSurface,
-                  )
-                : null,
+            style: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.w600,
+              color: colors.onSurface,
+            ),
           ),
           content: SizedBox(
-            // Foldable: stretch the field so the dialog spans the usable width instead of hugging its content.
-            width: big || innerPortrait ? double.maxFinite : null,
+            width: double.maxFinite,
             child: TextField(
               key: const Key('rename-field'),
               controller: field,
               autofocus: true,
-              maxLength: 60,
-              style: big ? const TextStyle(fontSize: 18) : null,
-              decoration: big
-                  ? const InputDecoration(
-                      contentPadding: EdgeInsets.symmetric(
-                        horizontal: 18,
-                        vertical: 18,
-                      ),
-                    )
-                  : null,
+              maxLength: 80,
+              style: const TextStyle(fontSize: 18),
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: colors.onSurface.withValues(alpha: dark ? .10 : .06),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(22),
+                  borderSide: BorderSide.none,
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(22),
+                  borderSide: BorderSide.none,
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(22),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 22,
+                  vertical: 22,
+                ),
+              ),
               textInputAction: TextInputAction.done,
               onSubmitted: (s) {
                 if (s.trim().isNotEmpty) Navigator.pop(context, s.trim());
               },
             ),
           ),
-          actionsPadding: big ? const EdgeInsets.fromLTRB(16, 4, 20, 20) : null,
+          actionsPadding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
           actions: [
-            TextButton(
-              style: big
-                  ? TextButton.styleFrom(
-                      minimumSize: const Size(96, 52),
-                      textStyle: const TextStyle(fontSize: 16),
-                    )
-                  : null,
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
-            ),
-            ListenableBuilder(
-              listenable: field,
-              builder: (context, _) => FilledButton(
-                style: big
-                    ? FilledButton.styleFrom(
-                        minimumSize: const Size(120, 52),
-                        textStyle: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
+            SizedBox(
+              width: double.infinity,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextButton(
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 52),
+                        shape: const StadiumBorder(),
+                        backgroundColor: colors.onSurface.withValues(
+                          alpha: dark ? .10 : .06,
                         ),
-                      )
-                    : null,
-                onPressed: field.text.trim().isEmpty
-                    ? null
-                    : () => Navigator.pop(context, field.text.trim()),
-                child: const Text('保存'),
+                        foregroundColor: colors.onSurface,
+                        textStyle: const TextStyle(fontSize: 16),
+                      ),
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('取消'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ListenableBuilder(
+                      listenable: field,
+                      builder: (context, _) => FilledButton(
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size(0, 52),
+                          shape: const StadiumBorder(),
+                          backgroundColor: colors.onSurface,
+                          foregroundColor: colors.surface,
+                          disabledBackgroundColor: colors.onSurface.withValues(
+                            alpha: .38,
+                          ),
+                          disabledForegroundColor: colors.surface,
+                          textStyle: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        onPressed: field.text.trim().isEmpty
+                            ? null
+                            : () => Navigator.pop(context, field.text.trim()),
+                        child: const Text('保存'),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -730,229 +770,75 @@ class _JarvisHomeState extends State<JarvisHome> {
     );
   }
 
-  Widget sidebar({required bool drawer}) => SafeArea(
-    child: Column(
-      children: [
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          child: Row(
-            key: ValueKey('sidebar-brand-row'),
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.all(Radius.circular(9)),
-                child: JarvisMark(size: 32, tile: true),
-              ),
-              SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  'JARVIS',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-                ),
-              ),
-            ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: SizedBox(
-            width: double.infinity,
-            child: FilledButton.tonalIcon(
-              key: const Key('new-conversation'),
-              style: FilledButton.styleFrom(
-                minimumSize: const Size(48, 53),
-                backgroundColor: Theme.of(context).brightness == Brightness.dark
-                    ? Theme.of(context).colorScheme.primary
-                    : null,
-                foregroundColor: Theme.of(context).brightness == Brightness.dark
-                    ? Theme.of(context).colorScheme.onPrimary
-                    : null,
-              ),
-              onPressed: () {
-                widget.controller.newConversation();
-                if (drawer) Navigator.pop(context);
-              },
-              icon: const Icon(Icons.add),
-              label: const Text('新建会话'),
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Expanded(
-          child: ListView.builder(
-            key: const Key('conversation-list'),
-            itemCount: widget.controller.conversations.length,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            itemBuilder: (context, index) {
-              final c = widget.controller.conversations[index];
-              Widget swipeable(Widget row) => Dismissible(
-                // The generation changes when a swipe could not delete (see onDismissed), replacing the dismissed row.
-                key: ValueKey(
-                  'conversation-dismiss-${c.id}-${dismissGeneration[c.id] ?? 0}',
-                ),
-                direction: DismissDirection.endToStart,
-                dismissThresholds: const {DismissDirection.endToStart: .35},
-                confirmDismiss: (_) async {
-                  final ok = widget.controller.canDeleteConversation(c.id);
-                  if (!ok) {
-                    showSidebarNotice('请先结束此会话的任务或通话，再删除会话');
-                  }
-                  return ok;
-                },
-                onDismissed: (_) {
-                  if (!widget.controller.canDeleteConversation(c.id)) {
-                    // It started generating between the swipe and now: bring the row back instead of leaving a
-                    // dismissed Dismissible in the tree.
-                    setState(
-                      () => dismissGeneration[c.id] =
-                          (dismissGeneration[c.id] ?? 0) + 1,
-                    );
-                  }
-                  deleteConversation(c.id);
-                },
-                background: const SizedBox.shrink(),
-                secondaryBackground: ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: ColoredBox(
-                    color: Theme.of(context).colorScheme.error,
-                    child: Align(
-                      alignment: Alignment.centerRight,
-                      child: Padding(
-                        padding: const EdgeInsets.only(right: 22),
-                        child: Icon(
-                          Icons.delete_outline,
-                          color: Theme.of(context).colorScheme.onError,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                child: row,
-              );
-              return Padding(
-                key: ValueKey('conversation-row-${c.id}'),
-                padding: const EdgeInsets.only(bottom: 4),
-                child: swipeable(
-                  Material(
-                    key: ValueKey('conversation-surface-${c.id}'),
-                    color: c.id == widget.controller.selectedId
-                        ? Theme.of(context).colorScheme.surfaceContainerHigh
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(16),
-                    clipBehavior: Clip.antiAlias,
-                    animateColor: true,
-                    animationDuration: Duration(
-                      milliseconds: MediaQuery.disableAnimationsOf(context)
-                          ? 0
-                          : 160,
-                    ),
-                    child: ListTile(
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      selected: c.id == widget.controller.selectedId,
-                      tileColor: Colors.transparent,
-                      selectedTileColor: Colors.transparent,
-                      title: Text(
-                        c.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 14),
-                      ),
-                      minTileHeight: 58,
-                      contentPadding: const EdgeInsets.only(left: 12, right: 4),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (widget.controller.isGenerating(c.id))
-                            const SizedBox(
-                              width: 12,
-                              height: 12,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                          JarvisActionMenu(
-                            tooltip: '会话操作',
-                            iconSize: 18,
-                            actions: const [
-                              JarvisMenuAction(
-                                'rename',
-                                '重命名',
-                                icon: Icons.edit_outlined,
-                              ),
-                              JarvisMenuAction(
-                                'delete',
-                                '删除',
-                                icon: Icons.delete_outline,
-                                destructive: true,
-                              ),
-                            ],
-                            onSelected: (value) => value == 'rename'
-                                ? renameConversation(c.id, c.title)
-                                : deleteConversation(c.id),
-                          ),
-                        ],
-                      ),
-                      onTap: () {
-                        widget.controller.select(c.id);
-                        if (drawer) Navigator.pop(context);
-                      },
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-        if (sidebarNotice case final notice?)
-          _SidebarNotice(
+  /// The list of conversations: a drawer, docked beside the chat, or a page of
+  /// its own (see [ConversationSidebar]).
+  Widget sidebar({
+    required bool drawer,
+    double rightGap = 0,
+    bool fullPage = false,
+    bool canClose = true,
+  }) => ConversationSidebar(
+    controller: widget.controller,
+    mode: fullPage
+        ? SidebarMode.page
+        : drawer
+        ? SidebarMode.drawer
+        : SidebarMode.docked,
+    rightGap: rightGap,
+    notice: sidebarNotice == null
+        ? null
+        : _SidebarNotice(
             key: const Key('sidebar-notice'),
-            text: notice.text,
-            onUndo: notice.undo == null
+            text: sidebarNotice!.text,
+            onUndo: sidebarNotice!.undo == null
                 ? null
                 : () {
                     sidebarNoticeTimer?.cancel();
-                    widget.controller.restoreConversation(notice.undo!);
+                    widget.controller.restoreConversation(sidebarNotice!.undo!);
                     setState(() => sidebarNotice = null);
                   },
           ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-          child: Material(
-            color: Colors.transparent,
-            borderRadius: BorderRadius.circular(16),
-            clipBehavior: Clip.antiAlias,
-            child: ListTile(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-              minTileHeight: 52,
-              leading: const Icon(Icons.settings_outlined, size: 22),
-              title: const Text('设置'),
-              onTap: () {
-                if (drawer) Navigator.pop(context);
-                settings();
-              },
-            ),
-          ),
-        ),
-      ],
-    ),
+    onChoose: () {
+      if (drawer) Navigator.pop(context);
+    },
+    onNew: () {
+      widget.controller.newConversation();
+      if (drawer) Navigator.pop(context);
+    },
+    onSettings: () {
+      if (drawer) Navigator.pop(context);
+      settings();
+    },
+    onRename: renameConversation,
+    onDelete: deleteConversation,
+    onClose: fullPage
+        ? () => Navigator.pop(context)
+        : (!drawer && canClose)
+        ? () => setState(() => showDocked = false)
+        : null,
   );
 
   Widget dockedSidebar(
     double width,
     bool visible,
     Duration duration,
-    Widget content,
-  ) => SidebarSplit(
+    Widget content, {
+    double foldGap = 0,
+    bool split = false,
+  }) => SidebarWidthTransition(
     width: width,
-    visible: visible,
-    duration: duration,
-    onChanged: (value) => setState(() => showDocked = value),
-    content: content,
-    child: sidebar(drawer: false),
+    split: split,
+    builder: (context, width) => SidebarSplit(
+      width: width,
+      visible: visible,
+      duration: duration,
+      // Half-folded the list has its screen: no grip to fold it away.
+      grip: !split,
+      onChanged: (value) => setState(() => showDocked = value),
+      content: content,
+      // The room beside the crease is kept clear of the list's rows.
+      child: sidebar(drawer: false, rightGap: foldGap, canClose: !split),
+    ),
   );
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -960,11 +846,16 @@ class _JarvisHomeState extends State<JarvisHome> {
     builder: (context, _) {
       final size = MediaQuery.sizeOf(context),
           padding = MediaQuery.viewPaddingOf(context);
+      final fold = FoldState.fromFeatures(
+        MediaQuery.displayFeaturesOf(context),
+      );
       final layout = AdaptiveLayout.forWindow(
         size.width,
         size.height,
         horizontalInsets: padding.horizontal,
         verticalInsets: padding.vertical,
+        fold: fold,
+        leftInset: padding.left,
       );
       if (lastDefault != layout.docked) {
         // Keep the person's last choice across rotation and folding. A first
@@ -978,9 +869,13 @@ class _JarvisHomeState extends State<JarvisHome> {
           });
         }
       }
-      final docked = layout.docked && (showDocked ?? true);
+      // Half-folded, the list always has its screen; the person's own choice
+      // (showDocked) is kept untouched for when the hinge opens again.
+      final docked = layout.docked && (layout.split || (showDocked ?? true));
       final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
       final foldWindow = FoldProportions.isFold(size.width, size.height);
+      // Laid out from the columns (a straight phone has its own rules there).
+      final columnWindow = FoldProportions.usesColumns(size.width, size.height);
       final paneWidth = math.max(
         0.0,
         size.width - padding.horizontal - (docked ? layout.sidebarWidth : 0),
@@ -991,18 +886,30 @@ class _JarvisHomeState extends State<JarvisHome> {
         paneWidth: paneWidth,
         dockedMode: layout.docked,
         sidebarOpen: docked,
+        keyboardUp: keyboardInset > 0,
       );
-      final tallWindow = !foldWindow && size.height >= size.width * 1.9;
+      final tallWindow =
+          DeviceKind.foldable == null &&
+          !foldWindow &&
+          size.height >= size.width * 1.9;
       final composerGap = tallWindow
           ? AdaptiveLayout.tallComposerGap(padding.bottom)
           : 10.0;
       // All folding shapes share one pane; the IME never changes its widths.
       Widget centerContent(Widget child) => child;
-      final contentEdgeGap = foldWindow ? columns.composerInset : composerGap;
+      final contentEdgeGap = columnWindow ? columns.composerInset : composerGap;
       final navigationInset = math.max(0.0, padding.bottom - keyboardInset);
       final reservedBottom = tallWindow
           ? math.min(composerGap, navigationInset)
           : navigationInset;
+      final naturalSidebarWidth = layout.split
+          ? AdaptiveLayout.forWindow(
+              size.width,
+              size.height,
+              horizontalInsets: padding.horizontal,
+              verticalInsets: padding.vertical,
+            ).sidebarWidth
+          : layout.sidebarWidth;
       final content = LayoutBuilder(
         builder: (context, actualBounds) {
           final columns = FoldProportions.columns(
@@ -1011,13 +918,17 @@ class _JarvisHomeState extends State<JarvisHome> {
             paneWidth: actualBounds.maxWidth,
             dockedMode: layout.docked,
             sidebarOpen: docked,
+            keyboardUp: keyboardInset > 0,
+            // How far out the list is, against the width it has when the
+            // hinge is not bent: while it moves to or from its half-screen
+            // width the proportions stay where they are, not jump.
             sidebarProgress: layout.docked
                 ? ((size.width - padding.horizontal - actualBounds.maxWidth) /
-                          layout.sidebarWidth)
+                          naturalSidebarWidth)
                       .clamp(0.0, 1.0)
                 : null,
           );
-          final contentEdgeGap = foldWindow
+          final contentEdgeGap = columnWindow
               ? columns.composerInset
               : composerGap;
           final inputBottomGap = tallWindow
@@ -1103,96 +1014,27 @@ class _JarvisHomeState extends State<JarvisHome> {
                                   child: Row(
                                     key: const ValueKey('chat-header-row'),
                                     children: [
-                                      IconButton(
-                                        tooltip: docked ? '收起会话' : '展开会话',
-                                        icon: const Icon(Icons.menu, size: 20),
-                                        onPressed: () {
-                                          if (layout.docked) {
-                                            setState(
-                                              () => showDocked = !docked,
-                                            );
-                                          } else {
-                                            FocusManager.instance.primaryFocus
-                                                ?.unfocus();
-                                            scaffold.currentState?.openDrawer();
-                                          }
-                                        },
-                                      ),
-                                      Expanded(
-                                        child: Row(
-                                          children: [
-                                            Flexible(
-                                              child: Row(
-                                                key: const ValueKey(
-                                                  'chat-heading-line',
-                                                ),
-                                                mainAxisSize: MainAxisSize.min,
-                                                children: [
-                                                  Flexible(
-                                                    child: Text(
-                                                      widget
-                                                          .controller
-                                                          .current
-                                                          .title,
-                                                      maxLines: 1,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                      style: Theme.of(context)
-                                                          .textTheme
-                                                          .titleMedium,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                            IconButton(
-                                              key: const Key('connection-dot'),
-                                              tooltip: '模型状态',
-                                              onPressed: () =>
-                                                  Navigator.of(context).push(
-                                                    MaterialPageRoute<void>(
-                                                      builder: (_) =>
-                                                          StatusPage(
-                                                            controller: widget
-                                                                .controller,
-                                                          ),
-                                                    ),
-                                                  ),
-                                              style: IconButton.styleFrom(
-                                                minimumSize: const Size(48, 48),
-                                                fixedSize: const Size(48, 48),
-                                                shape: const CircleBorder(),
-                                              ),
-                                              icon: Semantics(
-                                                label:
-                                                    widget.controller.connecting
-                                                    ? '正在连接'
-                                                    : widget
-                                                          .controller
-                                                          .modelReady
-                                                    ? '模型已连接'
-                                                    : '模型未连接',
-                                                child: Icon(
-                                                  Icons.circle,
-                                                  size: 6,
-                                                  color:
-                                                      widget
-                                                          .controller
-                                                          .connecting
-                                                      ? const Color(0xffc6a765)
-                                                      : widget
-                                                            .controller
-                                                            .modelReady
-                                                      ? const Color(0xff2d9f80)
-                                                      : Theme.of(context)
-                                                            .colorScheme
-                                                            .error,
-                                                ),
-                                              ),
-                                            ),
-                                          ],
+                                      if (layout.split)
+                                        // Half-folded the list cannot be folded away.
+                                        const SizedBox(width: 12)
+                                      else
+                                        IconButton(
+                                          tooltip: docked ? '收起会话' : '展开会话',
+                                          icon: const ListGlyph(),
+                                          onPressed: () {
+                                            if (layout.docked) {
+                                              setState(
+                                                () => showDocked = !docked,
+                                              );
+                                            } else {
+                                              FocusManager.instance.primaryFocus
+                                                  ?.unfocus();
+                                              scaffold.currentState
+                                                  ?.openDrawer();
+                                            }
+                                          },
                                         ),
-                                      ),
+                                      const Spacer(),
                                       IconButton(
                                         key: const Key('start-new-chat'),
                                         tooltip: '新建会话',
@@ -1201,9 +1043,14 @@ class _JarvisHomeState extends State<JarvisHome> {
                                               ?.unfocus();
                                           widget.controller.newConversation();
                                         },
+                                        style: IconButton.styleFrom(
+                                          foregroundColor: Theme.of(context)
+                                              .colorScheme
+                                              .onSurface,
+                                        ),
                                         icon: const Icon(
                                           Icons.edit_square,
-                                          size: 20,
+                                          size: 21,
                                         ),
                                       ),
                                       JarvisActionMenu(
@@ -1215,6 +1062,11 @@ class _JarvisHomeState extends State<JarvisHome> {
                                             icon: Icons.tune,
                                           ),
                                           JarvisMenuAction(
+                                            'works',
+                                            '作品',
+                                            icon: Icons.photo_library_outlined,
+                                          ),
+                                          JarvisMenuAction(
                                             'status',
                                             '模型状态',
                                             icon: Icons.monitor_heart_outlined,
@@ -1223,6 +1075,17 @@ class _JarvisHomeState extends State<JarvisHome> {
                                         onSelected: (value) {
                                           if (value == 'settings') {
                                             settings();
+                                          } else if (value == 'works') {
+                                            unawaited(
+                                              showGeneratedWorks(
+                                                context,
+                                                widget.controller,
+                                                conversationId: widget
+                                                    .controller
+                                                    .current
+                                                    .id,
+                                              ),
+                                            );
                                           } else {
                                             Navigator.of(context).push(
                                               MaterialPageRoute<void>(
@@ -1244,10 +1107,10 @@ class _JarvisHomeState extends State<JarvisHome> {
                                     controller: widget.controller,
                                     keyboardInset: keyboardInset,
                                     welcomeInset: contentEdgeGap,
-                                    messageInset: foldWindow
+                                    messageInset: columnWindow
                                         ? columns.messageInset
                                         : 18,
-                                    bubbleWidth: foldWindow
+                                    bubbleWidth: columnWindow
                                         ? math.min(
                                             640,
                                             columns.messages *
@@ -1406,20 +1269,27 @@ class _JarvisHomeState extends State<JarvisHome> {
                     // Keep the drawer controller alive so its internal open
                     // state can be closed when switching to a docked layout.
                     drawerEnableOpenDragGesture: !layout.docked,
+                    // The page behind a drawer goes a little dark; behind a list that
+                    // covers the window there is nothing to darken.
+                    drawerScrimColor: layout.fullPageList
+                        ? Colors.transparent
+                        : Colors.black.withValues(alpha: .45),
                     drawer: Drawer(
                       width: layout.sidebarWidth,
-                      elevation: 0,
+                      // The card colour, square at the edge, with a soft shadow where
+                      // it is a drawer (as on iOS).
+                      elevation: layout.fullPageList ? 0 : 12,
+                      shadowColor: Colors.black.withValues(alpha: .35),
                       backgroundColor:
                           Theme.of(context).brightness == Brightness.dark
                           ? Theme.of(context).colorScheme.surfaceContainerLow
-                          : Theme.of(context).colorScheme.surface,
+                          : Colors.white,
                       surfaceTintColor: Colors.transparent,
-                      shape: const RoundedRectangleBorder(
-                        borderRadius: BorderRadius.horizontal(
-                          right: Radius.circular(24),
-                        ),
+                      shape: const RoundedRectangleBorder(),
+                      child: sidebar(
+                        drawer: true,
+                        fullPage: layout.fullPageList,
                       ),
-                      child: sidebar(drawer: true),
                     ),
                     body: SafeArea(
                       top: false,
@@ -1435,6 +1305,8 @@ class _JarvisHomeState extends State<JarvisHome> {
                                     : 200,
                               ),
                               content,
+                              foldGap: layout.foldGap,
+                              split: layout.split,
                             )
                           : content,
                     ),
@@ -1448,10 +1320,21 @@ class _JarvisHomeState extends State<JarvisHome> {
                 composerAnchor: composerBounds,
                 allowPresentation: !drawerOpen,
                 noticeInset: padding.right + math.max(16, contentEdgeGap),
-                child: VoiceOverlay(
-                  controller: widget.controller,
-                  open: widget.controller.voice.open,
-                ),
+                // Half-folded the call page stands on the right screen, as the
+                // chat does: it is laid out for that screen's own size and
+                // nothing of it crosses the crease.
+                child: layout.split
+                    ? DisplayFeatureSubScreen(
+                        anchorPoint: Offset(size.width, 0),
+                        child: VoiceOverlay(
+                          controller: widget.controller,
+                          open: widget.controller.voice.open,
+                        ),
+                      )
+                    : VoiceOverlay(
+                        controller: widget.controller,
+                        open: widget.controller.voice.open,
+                      ),
               ),
             ),
           ],
@@ -1646,18 +1529,28 @@ class _ChatPanelState extends State<ChatPanel> {
                                   ),
                                 ),
                                 Text(
-                                  timeGreeting(DateTime.now()),
-                                  style: Theme.of(context).textTheme.titleLarge,
+                                  '想聊点什么？',
+                                  style: Theme.of(context).textTheme.titleLarge
+                                      ?.copyWith(
+                                        fontSize: 21,
+                                        fontWeight: FontWeight.w600,
+                                      ),
                                 ),
                                 reveal(
                                   hintVisibility,
-                                  const Column(
+                                  Column(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      SizedBox(height: 8),
+                                      const SizedBox(height: 8),
                                       Text(
                                         '写下想法，或直接开口。',
                                         textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          fontSize: 15,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .onSurfaceVariant,
+                                        ),
                                       ),
                                     ],
                                   ),
@@ -1705,15 +1598,11 @@ class _ChatPanelState extends State<ChatPanel> {
                                                         11 + spacious,
                                                     descriptionLines:
                                                         descriptionLines,
-                                                    onPressed: () {
-                                                      widget
-                                                              .controller
-                                                              .current
-                                                              .draft =
-                                                          starters[i].prompt;
-                                                      widget.controller
-                                                          .notifyDraftSuggestion();
-                                                    },
+                                                    onPressed: () =>
+                                                        _pickStarter(
+                                                          widget.controller,
+                                                          starters[i].prompt,
+                                                        ),
                                                   ),
                                                 ),
                                             ],
@@ -1777,11 +1666,21 @@ class _ChatPanelState extends State<ChatPanel> {
               m.calls.isNotEmpty &&
               m.error == null) {
             return widget.controller.isGenerating(c.id)
-                ? const Padding(
-                    padding: EdgeInsets.all(16),
-                    child: Text('正在调用工具…'),
-                  )
+                ? const MessageStatusRow('正在调用工具…')
                 : const SizedBox.shrink();
+          }
+          // A row with nothing to show (no words, thinking, attachment or call,
+          // no error, and not being written) is not drawn.
+          if (m.role == 'assistant' &&
+              m.text.isEmpty &&
+              m.reasoning.isEmpty &&
+              m.attachments.isEmpty &&
+              m.calls.isEmpty &&
+              m.error == null &&
+              m.status != 'generating' &&
+              m.status != 'interrupted' &&
+              m.status != 'length') {
+            return const SizedBox.shrink();
           }
           return Padding(
             key: ValueKey('message-${c.id}-${m.id}'),
@@ -1811,65 +1710,52 @@ class _ChatPanelState extends State<ChatPanel> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     if (m.reasoning.isNotEmpty)
-                      ExpansionTile(
+                      ReasoningBlock(
                         key: PageStorageKey('reasoning-${c.id}-${m.id}'),
-                        onExpansionChanged: (open) {
-                          if (open) scroll.pauseFollowing();
-                        },
-                        dense: true,
-                        minTileHeight: 48,
-                        tilePadding: EdgeInsets.zero,
-                        title: Text(
-                          '思考过程',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                        children: [
-                          SelectableText(
-                            m.reasoning,
-                            style: TextStyle(
-                              fontSize:
-                                  widget.controller.settings.messageFontSize,
-                              height: 1.65,
-                            ),
-                            key: PageStorageKey(
-                              'reasoning-text-${c.id}-${m.id}',
-                            ),
-                          ),
-                        ],
+                        text: m.reasoning,
+                        size: widget.controller.settings.messageFontSize + 1,
+                        thinking: m.status == 'generating' && m.text.isEmpty,
+                        onOpened: scroll.pauseFollowing,
                       ),
-                    if (m.attachments.isNotEmpty)
+                    if (m.attachments.isNotEmpty) ...[
                       Wrap(
                         spacing: 6,
-                        runSpacing: 4,
+                        runSpacing: 6,
                         children: [
                           for (final a in m.attachments)
                             AttachmentCard(
                               key: ValueKey(a.id),
                               controller: widget.controller,
                               item: a,
+                              inMessage: true,
                             ),
                         ],
                       ),
+                      if (m.text.isNotEmpty) const SizedBox(height: 8),
+                    ],
                     if (user && m.text.isNotEmpty)
                       SelectableText(
                         m.text,
                         style: TextStyle(
-                          fontSize: widget.controller.settings.messageFontSize,
-                          height: 1.65,
+                          fontSize:
+                              widget.controller.settings.messageFontSize + 1,
+                          height: 1.6,
                         ),
                       )
+                    else if (!user &&
+                        m.text.isEmpty &&
+                        m.status == 'generating')
+                      const MessageStatusRow('正在思考…')
                     else if (!user)
                       MarkdownBody(
                         styleSheet: chatMarkdownStyle(
                           context,
-                          widget.controller.settings.messageFontSize,
+                          widget.controller.settings.messageFontSize + 1,
                         ),
                         builders: chatMarkdownBuilders(
-                          widget.controller.settings.messageFontSize,
+                          widget.controller.settings.messageFontSize + 1,
                         ),
-                        data: m.text.isEmpty && m.status == 'generating'
-                            ? '正在思考…'
-                            : m.text,
+                        data: m.text,
                         selectable: true,
                         onTapLink: (text, href, title) {
                           final uri = Uri.tryParse(href ?? '');
@@ -1899,21 +1785,22 @@ class _ChatPanelState extends State<ChatPanel> {
                               child: Text(alt ?? '打开图片'),
                             );
                           }
-                          return AuthenticatedImage(
-                            controller: widget.controller,
-                            url: resolved.toString(),
+                          // At most 480 wide, whatever the column is, rounded, with a
+                          // retry on failure (the picture's own rules).
+                          return Align(
+                            alignment: Alignment.centerLeft,
+                            child: AuthenticatedImage(
+                              controller: widget.controller,
+                              url: resolved.toString(),
+                              alt: alt ?? '',
+                            ),
                           );
                         },
                       ),
-                    if (!user && m.text.isNotEmpty)
+                    if (!user && m.text.isNotEmpty && m.status != 'generating')
                       Row(
                         children: [
-                          ReplyActionButton(
-                            tooltip: '复制回复',
-                            onPressed: () =>
-                                Clipboard.setData(ClipboardData(text: m.text)),
-                            icon: Icons.copy_outlined,
-                          ),
+                          CopyReplyButton(text: m.text),
                           if (m ==
                                   c.messages
                                       .where(
@@ -1921,7 +1808,8 @@ class _ChatPanelState extends State<ChatPanel> {
                                             m.role == 'assistant' && !m.hidden,
                                       )
                                       .lastOrNull &&
-                              !widget.controller.isGenerating(c.id))
+                              !widget.controller.isGenerating(c.id) &&
+                              !widget.controller.voice.active)
                             ReplyActionButton(
                               tooltip: '重新生成',
                               onPressed: widget.controller.regenerate,
@@ -1930,20 +1818,17 @@ class _ChatPanelState extends State<ChatPanel> {
                         ],
                       ),
                     if (m.status == 'interrupted')
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          m.error ?? '回复已中断',
-                          style: const TextStyle(fontSize: 12),
-                        ),
+                      _ReplyNote(
+                        icon: m.error == null
+                            ? Icons.stop_circle_outlined
+                            : Icons.error_outline,
+                        text: m.error ?? '已停止',
+                        failed: m.error != null,
                       ),
                     if (m.status == 'length')
-                      const Padding(
-                        padding: EdgeInsets.only(top: 8),
-                        child: Text(
-                          '已达到输出长度上限',
-                          style: TextStyle(fontSize: 12),
-                        ),
+                      const _ReplyNote(
+                        icon: Icons.info_outline,
+                        text: '已达到输出长度上限',
                       ),
                   ],
                 ),
@@ -1957,7 +1842,7 @@ class _ChatPanelState extends State<ChatPanel> {
       children: [
         Positioned.fill(child: messages),
         Positioned(
-          bottom: 8,
+          bottom: 12,
           left: 0,
           right: 0,
           child: Center(
@@ -1965,30 +1850,13 @@ class _ChatPanelState extends State<ChatPanel> {
               valueListenable: scroll.following,
               builder: (context, following, _) => following
                   ? const SizedBox.shrink()
-                  : FilledButton.tonalIcon(
+                  : _JumpToLatest(
                       key: const Key('return-to-latest'),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: Theme.of(context)
-                            .colorScheme
-                            .surfaceContainerHigh,
-                        foregroundColor: Theme.of(context)
-                            .colorScheme
-                            .onSurface,
-                        elevation: 3,
-                        side: BorderSide(
-                          color: Theme.of(context).colorScheme.outlineVariant,
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 10,
-                        ),
-                      ),
+                      label: _newReply ? '有新回复，回到底部' : '回到底部',
                       onPressed: () {
                         _newReply = false;
-                        scroll.resumeFollowing();
+                        unawaited(scroll.animateToLatest());
                       },
-                      icon: const Icon(Icons.arrow_downward, size: 16),
-                      label: Text(_newReply ? '有新回复 · 回到最新' : '回到最新'),
                     ),
             ),
           ),
@@ -2114,12 +1982,33 @@ class _ComposerState extends State<Composer> {
             widget.controller.attachmentsLoading(widget.controller.current.id)
         ? 24.0
         : 0.0;
+    // The line that says why it cannot be sent yet takes room too, and is
+    // drawn only where the field keeps its minimum above it.
+    final roomWithoutHint =
+        widget.heightBudget -
+        (62 + widget.bottomGap + attachmentSpace + loadingSpace);
+    final showHint = !compact && roomWithoutHint >= 48 + 26;
+    final blockedSpace =
+        showHint &&
+            (widget.controller.current.draft.trim().isNotEmpty ||
+                widget.controller.current.pendingAttachments.isNotEmpty) &&
+            (!widget.controller.authenticated ||
+                widget.controller.model.isEmpty ||
+                widget.controller.attachmentsLoading(
+                  widget.controller.current.id,
+                ))
+        ? 26.0
+        : 0.0;
     final fieldBudget = compact
         ? 48.0
         : math.max(
             48.0,
             widget.heightBudget -
-                (62 + widget.bottomGap + attachmentSpace + loadingSpace),
+                (62 +
+                    widget.bottomGap +
+                    attachmentSpace +
+                    loadingSpace +
+                    blockedSpace),
           );
     return Padding(
       // Equal spacing from the usable pane edges, including above the IME.
@@ -2129,312 +2018,458 @@ class _ComposerState extends State<Composer> {
         widget.edgeGap,
         compact ? 2 : widget.bottomGap,
       ),
-      child: Container(
-        key: const Key('composer-frame'),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerLow,
-          border: Border.all(
-            color: Theme.of(context).colorScheme.outlineVariant,
-          ),
-          borderRadius: BorderRadius.circular(26),
-        ),
-        padding: EdgeInsets.all(compact ? 2 : 4),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (!compact &&
-                widget.controller.current.pendingAttachments.isNotEmpty)
-              SizedBox(
-                height: 48,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  children: [
-                    for (final a
-                        in widget.controller.current.pendingAttachments)
-                      AttachmentCard(
-                        key: ValueKey(a.id),
-                        controller: widget.controller,
-                        item: a,
-                        removable: true,
-                      ),
-                  ],
-                ),
-              ),
-            if (!compact &&
-                widget.controller.attachmentsLoading(
-                  widget.controller.current.id,
-                ))
-              const Padding(
-                padding: EdgeInsets.all(6),
-                child: LinearProgressIndicator(),
-              ),
-            Flex(
-              direction: compact ? Axis.horizontal : Axis.vertical,
+      // The box of the home page: lifted off the page (a blurred card colour,
+      // more of it on light), with the controls in it one step lighter again.
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(28),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+          child: Container(
+            key: const Key('composer-frame'),
+            decoration: BoxDecoration(
+              color: _composerFill(context),
+              border: Border.all(color: _composerEdge(context)),
+              borderRadius: BorderRadius.circular(28),
+            ),
+            padding: EdgeInsets.all(compact ? 2 : 4),
+            child: Column(
               mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: compact
-                  ? CrossAxisAlignment.center
-                  : CrossAxisAlignment.stretch,
               children: [
-                Flexible(
-                  flex: compact ? 1 : 0,
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxHeight: math.min(
-                        fieldBudget,
-                        math.max(
-                          48.0,
-                          math.min(
-                            160.0,
-                            MediaQuery.sizeOf(context).height -
-                                widget.keyboardInset -
-                                160,
+                if (!compact &&
+                    widget.controller.current.pendingAttachments.isNotEmpty)
+                  SizedBox(
+                    height: 48,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        for (final a
+                            in widget.controller.current.pendingAttachments)
+                          AttachmentCard(
+                            key: ValueKey(a.id),
+                            controller: widget.controller,
+                            item: a,
+                            removable: true,
                           ),
-                        ),
-                      ),
-                    ),
-                    child: TextField(
-                      key: const Key('chat-input'),
-                      controller: text,
-                      minLines: 1,
-                      maxLines: 5,
-                      onChanged: widget.controller.setDraft,
-                      decoration: const InputDecoration(
-                        hintText: '发送消息…',
-                        filled: false,
-                        border: InputBorder.none,
-                        enabledBorder: InputBorder.none,
-                        focusedBorder: InputBorder.none,
-                        contentPadding: EdgeInsets.fromLTRB(14, 10, 14, 6),
-                      ),
+                      ],
                     ),
                   ),
-                ),
-                Flexible(
-                  flex: compact ? 1 : 0,
-                  child: Row(
-                    children: [
-                      IconButton(
-                        tooltip:
-                            compact &&
-                                widget
-                                    .controller
-                                    .current
-                                    .pendingAttachments
-                                    .isNotEmpty
-                            ? '管理已选附件'
-                            : '添加附件',
-                        icon: Badge(
-                          isLabelVisible:
-                              compact &&
-                              widget
-                                  .controller
-                                  .current
-                                  .pendingAttachments
-                                  .isNotEmpty,
-                          label: Text(
-                            '${widget.controller.current.pendingAttachments.length}',
-                          ),
-                          child:
-                              widget.controller.attachmentsLoading(
-                                    widget.controller.current.id,
-                                  ) &&
-                                  compact
-                              ? const SizedBox.square(
-                                  dimension: 20,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.add, size: 22),
-                        ),
-                        onPressed:
-                            compact &&
-                                widget
-                                    .controller
-                                    .current
-                                    .pendingAttachments
-                                    .isNotEmpty
-                            ? manageAttachments
-                            : addAttachments,
-                      ),
-                      Expanded(
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: JarvisActionMenu(
-                            tooltip: '选择思考深度',
-                            selectedValue: widget.controller.effort,
-                            onSelected: widget.controller.setEffort,
-                            actions: const [
-                              JarvisMenuAction('none', '关闭'),
-                              JarvisMenuAction('low', '低'),
-                              JarvisMenuAction('medium', '中'),
-                              JarvisMenuAction('high', '高'),
-                            ],
-                            child: SizedBox(
-                              height: 48,
-                              child: Padding(
-                                padding: EdgeInsets.symmetric(
-                                  horizontal: compact ? 2 : 4,
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.lightbulb_outline,
-                                      size: compact ? 15 : 17,
-                                    ),
-                                    SizedBox(width: compact ? 2 : 4),
-                                    Flexible(
-                                      child: Text(
-                                        compact
-                                            ? effortLabel
-                                            : '思考 · $effortLabel',
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                    Icon(
-                                      Icons.expand_more,
-                                      size: compact ? 12 : 15,
-                                    ),
-                                  ],
-                                ),
+                if (!compact &&
+                    widget.controller.attachmentsLoading(
+                      widget.controller.current.id,
+                    ))
+                  const Padding(
+                    padding: EdgeInsets.all(6),
+                    child: LinearProgressIndicator(),
+                  ),
+                Flex(
+                  direction: compact ? Axis.horizontal : Axis.vertical,
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: compact
+                      ? CrossAxisAlignment.center
+                      : CrossAxisAlignment.stretch,
+                  children: [
+                    Flexible(
+                      flex: compact ? 1 : 0,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: math.min(
+                            fieldBudget,
+                            math.max(
+                              48.0,
+                              math.min(
+                                160.0,
+                                MediaQuery.sizeOf(context).height -
+                                    widget.keyboardInset -
+                                    160,
                               ),
                             ),
                           ),
                         ),
+                        child: TextField(
+                          key: const Key('chat-input'),
+                          controller: text,
+                          minLines: 1,
+                          maxLines: 5,
+                          onChanged: widget.controller.setDraft,
+                          style: const TextStyle(fontSize: 17),
+                          cursorColor: _accent(context),
+                          decoration: InputDecoration(
+                            hintText: '发送消息…',
+                            hintStyle: TextStyle(
+                              fontSize: 17,
+                              // A straight phone's hint is a step stronger.
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant
+                                  .withValues(
+                                    alpha:
+                                        FoldProportions.isFold(
+                                          MediaQuery.sizeOf(context).width,
+                                          MediaQuery.sizeOf(context).height,
+                                        )
+                                        ? .7
+                                        : .85,
+                                  ),
+                            ),
+                            filled: false,
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
+                            contentPadding: const EdgeInsets.fromLTRB(
+                              14,
+                              16,
+                              14,
+                              8,
+                            ),
+                          ),
+                        ),
                       ),
-                      InlineWorkNotice(
-                        controller: widget.controller,
-                        keyboardVisible: widget.keyboardVisible,
-                      ),
+                    ),
+                    // Why it cannot be sent yet, when there is something to send.
+                    if (showHint)
                       ValueListenableBuilder<TextEditingValue>(
                         valueListenable: text,
                         builder: (context, value, _) {
                           final c = widget.controller;
-                          final generating = c.isGenerating(c.current.id);
                           final hasDraft =
                               value.text.trim().isNotEmpty ||
                               c.current.pendingAttachments.isNotEmpty;
-                          final showSend = hasDraft || generating;
-                          final canSend =
-                              c.authenticated &&
-                              c.model.isNotEmpty &&
-                              !c.attachmentsLoading(c.current.id) &&
-                              hasDraft;
-                          Future<void> voice() async {
-                            FocusScope.of(context).unfocus();
-                            if (c.voice.active) {
-                              c.voice.expand();
-                              return;
-                            }
-                            await c.voice.start(c.current);
-                            if (context.mounted &&
-                                c.voice.error != null &&
-                                !c.voice.active) {
-                              showNotice(context, c.voice.error!);
-                            }
-                          }
-
-                          return Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (showSend)
-                                Transform.translate(
-                                  offset: const Offset(-2, -2),
-                                  transformHitTests: false,
-                                  child: IconButton(
-                                    tooltip: '语音对话',
-                                    style: IconButton.styleFrom(
-                                      backgroundColor: Theme.of(context)
+                          final blocked = !hasDraft
+                              ? null
+                              : (!c.authenticated || c.model.isEmpty)
+                              ? '模型未连接，暂时无法发送'
+                              : c.attachmentsLoading(c.current.id)
+                              ? '附件处理中，稍后即可发送'
+                              : null;
+                          return blocked == null
+                              ? const SizedBox.shrink()
+                              : Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    18,
+                                    0,
+                                    14,
+                                    4,
+                                  ),
+                                  child: Text(
+                                    blocked,
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: Theme.of(context)
                                           .colorScheme
-                                          .surfaceContainerHigh,
-                                      shape: const CircleBorder(),
-                                      fixedSize: const Size(36, 36),
-                                      minimumSize: const Size(36, 36),
-                                      tapTargetSize:
-                                          MaterialTapTargetSize.padded,
-                                    ),
-                                    onPressed: voice,
-                                    icon: const Icon(
-                                      Icons.mic_none_rounded,
-                                      size: 20,
+                                          .onSurfaceVariant,
                                     ),
                                   ),
-                                ),
-                              Transform.translate(
-                                offset: const Offset(-2, -2),
-                                transformHitTests: false,
-                                child: IconButton.filled(
-                                  style: IconButton.styleFrom(
-                                    minimumSize: const Size(36, 36),
-                                    fixedSize: const Size(36, 36),
-                                    padding: EdgeInsets.zero,
-                                    tapTargetSize: MaterialTapTargetSize.padded,
-                                    shape: const CircleBorder(),
-                                    backgroundColor: !showSend
-                                        ? Theme.of(context)
-                                              .colorScheme
-                                              .surfaceContainerHigh
-                                        : null,
-                                  ),
-                                  tooltip: showSend
-                                      ? (generating ? '停止当前回复' : '发送')
-                                      : '语音对话',
-                                  onPressed: !showSend
-                                      ? voice
-                                      : generating
-                                      ? () => c.cancel(c.current.id)
-                                      : canSend
-                                      ? () => unawaited(c.send())
-                                      : null,
-                                  icon: !showSend
-                                      ? Icon(
-                                          Icons.mic_none_rounded,
-                                          size: 20,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .onSurface,
-                                        )
-                                      : Icon(
-                                          showSend
-                                              ? (generating
-                                                    ? Icons.stop_rounded
-                                                    : Icons.arrow_upward)
-                                              : Icons.graphic_eq,
-                                          size:
-                                              !showSend &&
-                                                  MediaQuery.sizeOf(context)
-                                                          .height >=
-                                                      MediaQuery.sizeOf(context)
-                                                              .width *
-                                                          1.9
-                                              ? 16
-                                              : 20,
-                                          color:
-                                              (!showSend ||
-                                                  generating ||
-                                                  canSend)
-                                              ? Theme.of(context)
-                                                    .colorScheme
-                                                    .onPrimary
-                                              : Theme.of(context)
-                                                    .colorScheme
-                                                    .onSurface
-                                                    .withValues(alpha: .38),
-                                        ),
-                                ),
-                              ),
-                            ],
-                          );
+                                );
                         },
                       ),
-                    ],
-                  ),
+                    Flexible(
+                      flex: compact ? 1 : 0,
+                      child: Row(
+                        children: [
+                          IconButton(
+                            style: compact
+                                ? null
+                                : IconButton.styleFrom(
+                                    backgroundColor: _composerControl(context),
+                                    shape: const CircleBorder(),
+                                    fixedSize: const Size(36, 36),
+                                    minimumSize: const Size(36, 36),
+                                    tapTargetSize: MaterialTapTargetSize.padded,
+                                  ),
+                            tooltip:
+                                compact &&
+                                    widget
+                                        .controller
+                                        .current
+                                        .pendingAttachments
+                                        .isNotEmpty
+                                ? '管理已选附件'
+                                : '添加附件',
+                            icon: Badge(
+                              isLabelVisible:
+                                  compact &&
+                                  widget
+                                      .controller
+                                      .current
+                                      .pendingAttachments
+                                      .isNotEmpty,
+                              label: Text(
+                                '${widget.controller.current.pendingAttachments.length}',
+                              ),
+                              child:
+                                  widget.controller.attachmentsLoading(
+                                        widget.controller.current.id,
+                                      ) &&
+                                      compact
+                                  ? const SizedBox.square(
+                                      dimension: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.add, size: 22),
+                            ),
+                            onPressed:
+                                compact &&
+                                    widget
+                                        .controller
+                                        .current
+                                        .pendingAttachments
+                                        .isNotEmpty
+                                ? manageAttachments
+                                : addAttachments,
+                          ),
+                          Expanded(
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: JarvisActionMenu(
+                                tooltip: '选择思考深度',
+                                selectedValue: widget.controller.effort,
+                                onSelected: widget.controller.setEffort,
+                                actions: const [
+                                  JarvisMenuAction('none', '关闭'),
+                                  JarvisMenuAction('low', '低'),
+                                  JarvisMenuAction('medium', '中'),
+                                  JarvisMenuAction('high', '高'),
+                                ],
+                                child: !compact
+                                    ? Container(
+                                        height: 36,
+                                        margin: const EdgeInsets.only(left: 4),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 16,
+                                        ),
+                                        alignment: Alignment.center,
+                                        decoration: BoxDecoration(
+                                          color: _composerControl(context),
+                                          borderRadius: BorderRadius.circular(
+                                            18,
+                                          ),
+                                        ),
+                                        child: Text.rich(
+                                          TextSpan(
+                                            style: const TextStyle(
+                                              fontSize: 15.5,
+                                            ),
+                                            children: [
+                                              TextSpan(
+                                                text: '思考 ',
+                                                style: TextStyle(
+                                                  color: Theme.of(context)
+                                                      .colorScheme
+                                                      .onSurface,
+                                                ),
+                                              ),
+                                              TextSpan(
+                                                text: effortLabel,
+                                                style: TextStyle(
+                                                  color: Theme.of(context)
+                                                      .colorScheme
+                                                      .onSurfaceVariant,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      )
+                                    : SizedBox(
+                                        height: 48,
+                                        child: Padding(
+                                          padding: EdgeInsets.symmetric(
+                                            horizontal: compact ? 2 : 4,
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(
+                                                Icons.lightbulb_outline,
+                                                size: compact ? 15 : 17,
+                                              ),
+                                              SizedBox(width: compact ? 2 : 4),
+                                              Flexible(
+                                                child: Text(
+                                                  compact
+                                                      ? effortLabel
+                                                      : '思考 · $effortLabel',
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              Icon(
+                                                Icons.expand_more,
+                                                size: compact ? 12 : 15,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                              ),
+                            ),
+                          ),
+                          InlineWorkNotice(
+                            controller: widget.controller,
+                            keyboardVisible: widget.keyboardVisible,
+                          ),
+                          ValueListenableBuilder<TextEditingValue>(
+                            valueListenable: text,
+                            builder: (context, value, _) {
+                              final c = widget.controller;
+                              final generating = c.isGenerating(c.current.id);
+                              final hasDraft =
+                                  value.text.trim().isNotEmpty ||
+                                  c.current.pendingAttachments.isNotEmpty;
+                              final showSend = hasDraft || generating;
+                              final canSend =
+                                  c.authenticated &&
+                                  c.model.isNotEmpty &&
+                                  !c.attachmentsLoading(c.current.id) &&
+                                  hasDraft;
+                              Future<void> voice() async {
+                                FocusScope.of(context).unfocus();
+                                if (c.voice.active) {
+                                  c.voice.expand();
+                                  return;
+                                }
+                                await c.voice.start(c.current);
+                                if (context.mounted &&
+                                    c.voice.error != null &&
+                                    !c.voice.active) {
+                                  showNotice(context, c.voice.error!);
+                                }
+                              }
+
+                              return Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (showSend)
+                                    Transform.translate(
+                                      offset: const Offset(-2, -2),
+                                      transformHitTests: false,
+                                      child: IconButton(
+                                        tooltip: '语音对话',
+                                        style: IconButton.styleFrom(
+                                          backgroundColor: _composerControl(
+                                            context,
+                                          ),
+                                          foregroundColor: Theme.of(context)
+                                              .colorScheme
+                                              .onSurface,
+                                          shape: const CircleBorder(),
+                                          fixedSize: const Size(36, 36),
+                                          minimumSize: const Size(36, 36),
+                                          tapTargetSize:
+                                              MaterialTapTargetSize.padded,
+                                        ),
+                                        onPressed: voice,
+                                        icon: const Icon(
+                                          Icons.mic_none_rounded,
+                                          size: 20,
+                                        ),
+                                      ),
+                                    ),
+                                  Transform.translate(
+                                    offset: const Offset(-2, -2),
+                                    transformHitTests: false,
+                                    child: IconButton.filled(
+                                      style: IconButton.styleFrom(
+                                        minimumSize: const Size(36, 36),
+                                        fixedSize: const Size(36, 36),
+                                        padding: EdgeInsets.zero,
+                                        tapTargetSize:
+                                            MaterialTapTargetSize.padded,
+                                        shape: const CircleBorder(),
+                                        // The bright round button: voice at rest (the quiet
+                                        // one on a straight phone, so that the bright one is
+                                        // send), send or stop once there is something to send.
+                                        backgroundColor:
+                                            !showSend &&
+                                                !FoldProportions.isFold(
+                                                  MediaQuery.sizeOf(context)
+                                                      .width,
+                                                  MediaQuery.sizeOf(context)
+                                                      .height,
+                                                )
+                                            ? _composerControl(context)
+                                            : Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurface,
+                                        foregroundColor: Theme.of(context)
+                                            .colorScheme
+                                            .surface,
+                                        disabledBackgroundColor:
+                                            Theme.of(context)
+                                                .colorScheme
+                                                .onSurface
+                                                .withValues(alpha: .38),
+                                        disabledForegroundColor: Theme.of(
+                                          context,
+                                        ).colorScheme.surface,
+                                      ),
+                                      tooltip: showSend
+                                          ? (generating ? '停止当前回复' : '发送')
+                                          : '语音对话',
+                                      onPressed: !showSend
+                                          ? voice
+                                          : generating
+                                          ? () => c.cancel(c.current.id)
+                                          : canSend
+                                          ? () => unawaited(c.send())
+                                          : null,
+                                      icon: !showSend
+                                          ? Icon(
+                                              Icons.mic_rounded,
+                                              size: 21,
+                                              color:
+                                                  !FoldProportions.isFold(
+                                                    MediaQuery.sizeOf(context)
+                                                        .width,
+                                                    MediaQuery.sizeOf(context)
+                                                        .height,
+                                                  )
+                                                  ? Theme.of(context)
+                                                        .colorScheme
+                                                        .onSurface
+                                                  : Theme.of(context)
+                                                        .colorScheme
+                                                        .surface,
+                                            )
+                                          : Icon(
+                                              showSend
+                                                  ? (generating
+                                                        ? Icons.stop_rounded
+                                                        : Icons.arrow_upward)
+                                                  : Icons.graphic_eq,
+                                              size:
+                                                  !showSend &&
+                                                      MediaQuery.sizeOf(context)
+                                                              .height >=
+                                                          MediaQuery.sizeOf(
+                                                                context,
+                                                              ).width *
+                                                              1.9
+                                                  ? 16
+                                                  : 20,
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .surface,
+                                            ),
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -2544,10 +2579,13 @@ class _FoldWelcome extends StatelessWidget {
         fontWeight: FontWeight.bold,
         height: 1.25,
       );
-      final hintStyle = Theme.of(context).textTheme.bodyMedium!
-          .copyWith(fontSize: FoldProportions.welcomeHint, height: 1.4);
+      final hintStyle = Theme.of(context).textTheme.bodyMedium!.copyWith(
+        fontSize: FoldProportions.welcomeHint,
+        height: 1.4,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      );
       final greeting = timeGreeting(DateTime.now());
-      const hint = '写下想法，或直接开口。';
+      const hint = '有什么想聊的？输入问题，或点击麦克风直接说话。';
       final showCards = !coverLandscape;
       final floorGap = math.max(
         12.0,
@@ -2690,11 +2728,10 @@ class _FoldWelcome extends StatelessWidget {
                               titleSize: titleSize,
                               descriptionSize: detailSize,
                               descriptionLines: detailLines,
-                              onPressed: () {
-                                controller.current.draft =
-                                    controller.starters[i].prompt;
-                                controller.notifyDraftSuggestion();
-                              },
+                              onPressed: () => _pickStarter(
+                                controller,
+                                controller.starters[i].prompt,
+                              ),
                             ),
                           ),
                       ],
@@ -2738,14 +2775,16 @@ class _AdaptiveWelcome extends StatelessWidget {
     // Grow downwards while retaining the portrait avatar and greeting anchor.
     final topPadding =
         4.0 + (expandedPortrait ? 2 * (tileHeight - baseTileHeight) : 0.0);
-    final greeting = timeGreeting(DateTime.now());
+    const greeting = '想聊点什么？';
     final titleStyle = theme.textTheme.titleLarge!.copyWith(
-      fontSize: 20,
+      fontSize: 21,
+      fontWeight: FontWeight.w600,
       height: 1.35,
     );
     final hintStyle = theme.textTheme.bodyMedium!.copyWith(
-      fontSize: 13,
+      fontSize: 15,
       height: 1.4,
+      color: theme.colorScheme.onSurfaceVariant,
     );
     return LayoutBuilder(
       builder: (context, bounds) {
@@ -2807,10 +2846,8 @@ class _AdaptiveWelcome extends StatelessWidget {
                     key: ValueKey('starter-$i'),
                     starter: controller.starters[i],
                     descriptionLines: descriptionLines,
-                    onPressed: () {
-                      controller.current.draft = controller.starters[i].prompt;
-                      controller.notifyDraftSuggestion();
-                    },
+                    onPressed: () =>
+                        _pickStarter(controller, controller.starters[i].prompt),
                   ),
                 ),
             ],
@@ -2886,9 +2923,14 @@ class _StarterCard extends StatelessWidget {
     return OutlinedButton(
       onPressed: onPressed,
       style: OutlinedButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 18),
         alignment: Alignment.centerLeft,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        backgroundColor: colors.brightness == Brightness.dark
+            ? colors.surfaceContainerLow
+            : Colors.white,
+        side: BorderSide(color: colors.outlineVariant),
+        overlayColor: colors.onSurface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
       child: SizedBox(
         width: double.infinity,
@@ -2904,7 +2946,7 @@ class _StarterCard extends StatelessWidget {
                 fontSize: titleSize,
                 height: 1.35,
                 letterSpacing: 0,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w700,
                 color: colors.onSurface,
               ),
             ),
@@ -2952,4 +2994,114 @@ int _starterDescriptionLines(
     painter.dispose();
   }
   return lines.clamp(1, 2);
+}
+
+/// The way back to the newest words: a round glass button with a down arrow.
+class _JumpToLatest extends StatelessWidget {
+  const _JumpToLatest({
+    super.key,
+    required this.onPressed,
+    required this.label,
+  });
+  final VoidCallback onPressed;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final dark = colors.brightness == Brightness.dark;
+    return Semantics(
+      button: true,
+      label: label,
+      excludeSemantics: true,
+      onTap: onPressed,
+      child: ClipOval(
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+          child: Material(
+            color: colors.onSurface.withValues(alpha: dark ? .14 : .08),
+            shape: CircleBorder(
+              side: BorderSide(
+                color: colors.outlineVariant.withValues(alpha: .6),
+                width: .5,
+              ),
+            ),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: onPressed,
+              child: SizedBox.square(
+                dimension: 44,
+                child: Icon(
+                  Icons.arrow_downward,
+                  size: 20,
+                  color: colors.onSurface,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The box of the home page, lifted off the page: the card colour (a little of
+/// the page showing through), its hairline, and the controls in it one step
+/// lighter again. (iOS Palette.composer / composerEdge / composerControl.)
+Color _composerFill(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+    ? const Color(0xff222226).withValues(alpha: .6)
+    : Colors.white.withValues(alpha: .6);
+Color _composerEdge(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+    ? const Color(0xff3a3a40)
+    : const Color(0xffdce3e1);
+Color _composerControl(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+    ? const Color(0xff38383e)
+    : const Color(0xffedf0ef);
+
+/// The cyan for text-like uses (iOS Palette.accent).
+Color _accent(BuildContext context) =>
+    Theme.of(context).brightness == Brightness.dark
+    ? const Color(0xff8fdceb)
+    : const Color(0xff137589);
+
+/// A starter card is picked: its prompt is added to what is written, with a
+/// light tap.
+void _pickStarter(JarvisController controller, String prompt) {
+  HapticFeedback.lightImpact().catchError((Object _) {});
+  controller.addStarterPrompt(prompt);
+}
+
+/// A line under a reply that stopped or ran out: a small icon and a quiet line
+/// (in the error colour when it failed).
+class _ReplyNote extends StatelessWidget {
+  const _ReplyNote({
+    required this.icon,
+    required this.text,
+    this.failed = false,
+  });
+  final IconData icon;
+  final String text;
+  final bool failed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final tone = failed ? colors.error : colors.onSurfaceVariant;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: tone),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(text, style: TextStyle(fontSize: 12, color: tone)),
+          ),
+        ],
+      ),
+    );
+  }
 }

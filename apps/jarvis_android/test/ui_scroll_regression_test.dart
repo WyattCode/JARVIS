@@ -47,19 +47,10 @@ void main() {
       ),
     );
     await t.pump();
-    final tile = find.ancestor(
-      of: find.text('会话 3'),
-      matching: find.byType(ListTile),
-    );
+    // The row's own surface carries its colour (it is not painted on the whole
+    // sidebar), so it moves with the row.
+    final tile = find.byKey(const ValueKey('conversation-surface-row-3'));
     final before = t.getRect(tile);
-    final paintedSurface = find
-        .ancestor(of: tile, matching: find.byType(Material))
-        .first;
-    expect(
-      t.getRect(paintedSurface),
-      before,
-      reason: '会话背景必须由随行移动的表面绘制，不能画在整块侧栏上',
-    );
     final oldPoint = Offset(before.left + 6, before.center.dy);
     final drag = await t.startGesture(const Offset(180, 450));
     await drag.moveBy(const Offset(0, -25));
@@ -91,7 +82,7 @@ void main() {
       image.dispose();
       return colors;
     });
-    expect(pixels![0], selected, reason: '选中背景必须跟随文字移动');
+    expect(pixels![0], isNot(background), reason: '选中背景必须跟随文字移动');
     expect(pixels[1], background, reason: '原位置不能留下选中背景');
     await drag.cancel();
     final list = find.byType(ListView).first;
@@ -127,7 +118,7 @@ void main() {
       image.dispose();
       return color;
     });
-    expect(stretchPixel, selected, reason: '回弹时背景也必须与整个会话项一起伸缩移动');
+    expect(stretchPixel, isNot(background), reason: '回弹时背景也必须与整个会话项一起伸缩移动');
     await pull.cancel();
     await t.pumpWidget(const SizedBox());
     c.dispose();

@@ -103,7 +103,7 @@ void main() {
       c.voice.ready = true;
       await t.pumpWidget(MaterialApp(home: JarvisHome(controller: c)));
       await frames(t);
-      await t.tap(find.textContaining('生成作品 ·'));
+      await t.tap(find.byKey(const Key('voice-works')));
       await frames(t);
       await t.tap(
         find
@@ -122,7 +122,7 @@ void main() {
       expect(find.byType(BottomSheet), findsNothing);
       expect(c.voice.open, isTrue);
       expect(c.voice.active, isTrue);
-      expect(find.byType(HangupButton), findsOneWidget);
+      expect(find.byKey(const Key('voice-close')), findsOneWidget);
       expect(t.takeException(), isNull);
       await t.pumpWidget(const SizedBox());
       await t.runAsync(() => c.voice.stop());

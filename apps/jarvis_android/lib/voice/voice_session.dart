@@ -11,6 +11,7 @@ import '../net/realtime_wire.dart';
 import 'audio_device.dart';
 import 'pcm.dart';
 import 'audio_levels.dart';
+import 'spoken_text.dart';
 
 class _SessionUpdate {
   _SessionUpdate(this.id, this.reasoning, this.speech, this.voice, this.model);
@@ -50,14 +51,164 @@ class VoiceSession extends ChangeNotifier {
   String? _traceResponse;
   int _responseBytes = 0, _playedFrames = 0, _writtenFrames = 0;
   DateTime? _playbackTraceAt;
+
+  // Where the voice is in the reply on screen (ported from the iOS app, so the
+  // call page lights the words the same way). The native player reports how
+  // much it still holds; what arrived less what waits is what was heard.
+  bool _replyPlaying = false,
+      _replyAudioDone = false,
+      _replyMarkerSeen = false,
+      _replyEnded = false,
+      _replyFailed = false;
+  double? _replyMeasuredPace, _replyCutAt;
+  double _speechPace = SpokenText.defaultPace;
+  bool _speechPaceKnown = false;
+
+  /// A tap while JARVIS speaks holds its voice; the next one lets it go on from
+  /// the same word.
+  bool playbackPaused = false;
+
+  /// Hands-free and muted (the microphone is off, and says so).
+  bool get mutedInVad => muted && settings().voiceMode == 'vad';
+
+  /// False when there is nothing being said to hold.
+  bool togglePlaybackPause() {
+    if (playbackPaused) {
+      playbackPaused = false;
+      unawaited(_setPaused(false));
+      _changed();
+      return true;
+    }
+    if (!expressing || previewing) return false;
+    playbackPaused = true;
+    unawaited(_setPaused(true));
+    _changed();
+    return true;
+  }
+
+  Future<void> _setPaused(bool paused) async {
+    try {
+      await audio.setPaused(paused);
+    } catch (_) {
+      // A player that cannot hold simply goes on; the page says nothing false.
+      if (paused && playbackPaused) {
+        playbackPaused = false;
+        _changed();
+      }
+    }
+  }
+
+  void _resetReplyAudio() {
+    _replyPlaying = false;
+    _replyAudioDone = false;
+    _replyMarkerSeen = false;
+    _replyEnded = false;
+    _replyFailed = false;
+    _replyMeasuredPace = null;
+    _replyCutAt = null;
+  }
+
+  /// Seconds of the reply's audio the player has got through: what arrived,
+  /// less what still waits to be handed over and what the player holds.
+  double get _replyPlayedSeconds {
+    if (!_replyPlaying) return 0;
+    final waiting = _queuedBytes / 2 + bufferedFrames;
+    final seconds =
+        (_responseBytes / 2 - waiting) / (playbackRate < 1 ? 1 : playbackRate);
+    return seconds < 0 ? 0 : seconds;
+  }
+
+  /// All of the reply's sound is here: its length is known now, which says how
+  /// fast this voice speaks. That is only taken to be so when the reply has
+  /// ended and the sound has marked its end after the last of it: a marker that
+  /// comes in the middle of the reply ends a part (a paragraph) and says
+  /// nothing about how long the whole is.
+  void _noteReplyAudioComplete() {
+    if (_responseBytes <= 0 ||
+        _replyAudioDone ||
+        !_replyMarkerSeen ||
+        !_replyEnded) {
+      return;
+    }
+    _replyAudioDone = true;
+    final seconds = _responseBytes / 2 / (playbackRate < 1 ? 1 : playbackRate);
+    _replyMeasuredPace = SpokenText(lastBot).paceForTotal(seconds);
+  }
+
+  /// What the last reply showed of this voice's speed is the starting point for
+  /// the next one.
+  void _adoptMeasuredPace() {
+    final measured = _replyMeasuredPace;
+    if (measured == null) return;
+    _speechPace = _speechPaceKnown
+        ? _speechPace * 0.4 + measured * 0.6
+        : measured;
+    _speechPaceKnown = true;
+    _replyMeasuredPace = null;
+  }
+
+  /// A reply cut off while it was being said keeps the place it had reached,
+  /// for the page to show where the voice stopped.
+  void _markSpeechCut() {
+    if (_replyCutAt != null || !_replyPlaying) return;
+    if (!(speaking || _queuedBytes > 0)) return;
+    _replyCutAt = _replyPlayedSeconds;
+  }
+
+  /// Where the voice is in the reply the page shows, or null when there is
+  /// nothing to follow (no sound yet, a voice preview).
+  SpeechProgress? get speechProgress {
+    if (previewing || _responseBytes <= 0 || lastBot.isEmpty) return null;
+    final cut = _replyCutAt;
+    if (cut != null) {
+      return SpeechProgress(
+        played: cut,
+        total: null,
+        pace: _speechPace,
+        live: false,
+        cut: true,
+      );
+    }
+    if (!_replyPlaying) return null;
+    final sounding = speaking || _queuedBytes > 0;
+    // A reply the server failed stops being said part way: the words keep the
+    // mark where the sound ran out.
+    if (_replyFailed && !sounding) {
+      return SpeechProgress(
+        played: _replyPlayedSeconds,
+        total: null,
+        pace: _speechPace,
+        live: false,
+        cut: true,
+      );
+    }
+    // The player has run dry while the server is still making the reply: the
+    // voice is waiting for more sound, not done.
+    final waiting = _response != null && !_replyEnded && !_replyFailed;
+    return SpeechProgress(
+      played: _replyPlayedSeconds,
+      total: _replyAudioDone
+          ? _responseBytes / 2 / (playbackRate < 1 ? 1 : playbackRate)
+          : null,
+      pace: _speechPace,
+      live: sounding || waiting,
+      cut: false,
+    );
+  }
+
   bool _tracedText = false;
   void _trace(String phase, [Map<String, dynamic> extra = const {}]) {
     final record = <String, dynamic>{
-      'phase': phase, 'at': now().toUtc().toIso8601String(),
-      'response_id': _traceResponse, 'audio_epoch': _audioEpoch,
-      'received_bytes': _responseBytes, 'queued_bytes': _queuedBytes,
-      'written_frames': _writtenFrames, 'played_frames': _playedFrames,
-      'buffered_frames': bufferedFrames, 'sample_rate': playbackRate,
+      'phase': phase,
+      'at': now().toUtc().toIso8601String(),
+      'response_id': _traceResponse,
+      'audio_epoch': _audioEpoch,
+      'received_bytes': _responseBytes,
+      'queued_bytes': _queuedBytes,
+      'written_frames': _writtenFrames,
+      'played_frames': _playedFrames,
+      'buffered_frames': bufferedFrames,
+      'sample_rate': playbackRate,
       ...extra,
     };
     // Timing/counters only: never microphone audio, reply text or credentials.
@@ -67,6 +218,7 @@ class VoiceSession extends ChangeNotifier {
       debugPrint('JarvisVoice ${jsonEncode(record)}');
     }
   }
+
   final JarvisTransport api;
   final AudioDevice audio;
   final ChatSettings Function() settings;
@@ -129,15 +281,15 @@ class VoiceSession extends ChangeNotifier {
     } else if (_awaitingItem != null) {
       status = '正在识别';
       hint = '正在处理这段语音';
-    } else if (speaking) {
+    } else if (speaking || _queuedBytes > 0) {
       status = '正在说话';
       hint = _replyHint;
     } else if (thinking) {
       status = '正在思考';
       hint = '正在整理回复';
     } else if (replying) {
-      status = '正在准备语音';
-      hint = '回复正在转为语音';
+      status = '正在回复';
+      hint = _replyHint;
     } else {
       status = muted ? '已静音' : '已就绪';
       hint = muted ? '点击麦克风恢复聆听' : _readyHint;
@@ -182,6 +334,11 @@ class VoiceSession extends ChangeNotifier {
 
   String? get conversationId => owner?.id;
   void _changed() {
+    // A reply that is over (or cut off) is no longer held.
+    if (playbackPaused && !expressing) {
+      playbackPaused = false;
+      unawaited(_setPaused(false));
+    }
     if (!_disposed) {
       notifyListeners();
       changed();
@@ -249,6 +406,9 @@ class VoiceSession extends ChangeNotifier {
       receivedPcmBytes = 0;
       bufferedFrames = 0;
       playbackRate = 24000;
+      _responseBytes = 0;
+      _resetReplyAudio();
+      playbackPaused = false;
       error = null;
       lastYou = '';
       lastBot = '';
@@ -343,7 +503,8 @@ class VoiceSession extends ChangeNotifier {
         'item': {
           'type': 'message',
           'role': m.role,
-          if (m.role == 'assistant') 'status': m.status == 'complete' ? 'completed' : 'incomplete',
+          if (m.role == 'assistant')
+            'status': m.status == 'complete' ? 'completed' : 'incomplete',
           'content': [
             {'type': m.role == 'user' ? 'input_text' : 'text', 'text': m.text},
           ],
@@ -460,14 +621,22 @@ class VoiceSession extends ChangeNotifier {
       bufferedFrames = (e['buffered_frames'] as num?)?.toInt() ?? 0;
       playbackRate = (e['sample_rate'] as num?)?.toInt() ?? 24000;
       final active = e['active'] == true;
+      if (active && _responseBytes > 0 && _replyCutAt == null) {
+        _replyPlaying = true;
+      }
       _playedFrames = (e['played_frames'] as num?)?.toInt() ?? 0;
       _writtenFrames = (e['written_frames'] as num?)?.toInt() ?? 0;
-      if (!previewing && _traceResponse != null &&
-          (active != speaking || active &&
-           (_playbackTraceAt == null || now().difference(_playbackTraceAt!).inMilliseconds >= 1000))) {
+      if (!previewing &&
+          _traceResponse != null &&
+          (active != speaking ||
+              active &&
+                  (_playbackTraceAt == null ||
+                      now().difference(_playbackTraceAt!).inMilliseconds >=
+                          1000))) {
         _playbackTraceAt = now();
         _trace(active ? 'playback' : 'drained', {
-          'native_epoch': e['epoch'], 'underruns': e['underruns'],
+          'native_epoch': e['epoch'],
+          'underruns': e['underruns'],
           'monotonic_ms': e['monotonic_ms'],
           'response_pending': _response != null,
         });
@@ -533,6 +702,11 @@ class VoiceSession extends ChangeNotifier {
 
   Future<void> interrupt({String source = 'explicit_interrupt'}) async {
     _trace('cancel', {'source': source, 'server_active': _response != null});
+    if (playbackPaused) {
+      playbackPaused = false;
+      unawaited(_setPaused(false));
+    }
+    _markSpeechCut();
     _audioEpoch++;
     if (_response != null) {
       _cancelled.add(_response!);
@@ -573,7 +747,11 @@ class VoiceSession extends ChangeNotifier {
 
   void release() {
     if (!held) return;
-    _trace('input_end', {'source': 'ptt_release', 'input_turn': _turn, 'response_id': null});
+    _trace('input_end', {
+      'source': 'ptt_release',
+      'input_turn': _turn,
+      'response_id': null,
+    });
     held = false;
     hint = '正在处理这段语音';
     _tailOpen = true;
@@ -724,7 +902,11 @@ class VoiceSession extends ChangeNotifier {
         m.text = e['transcript'] as String? ?? '';
         lastYou = m.text;
       case 'input_audio_buffer.speech_stopped':
-        _trace('input_end', {'source': 'vad_speech_stopped', 'item_id': id, 'response_id': null});
+        _trace('input_end', {
+          'source': 'vad_speech_stopped',
+          'item_id': id,
+          'response_id': null,
+        });
       case 'conversation.item.input_audio_transcription.completed':
         _trace('transcription_completed', {'item_id': id, 'response_id': null});
         if (id == null) break;
@@ -761,6 +943,8 @@ class VoiceSession extends ChangeNotifier {
         _clearTurnError();
         _response = e['response']?['id'] as String?;
         _traceResponse = _response;
+        _adoptMeasuredPace();
+        _resetReplyAudio();
         _responseBytes = 0;
         _tracedText = false;
         _playbackTraceAt = null;
@@ -780,7 +964,7 @@ class VoiceSession extends ChangeNotifier {
           _trace('first_text');
         }
         thinking = false;
-        status = speaking ? '正在说话' : '正在准备语音';
+        status = speaking ? '正在说话' : '正在回复';
         hint = _replyHint;
       case 'response.text.done':
       case 'response.audio_transcript.done':
@@ -800,6 +984,13 @@ class VoiceSession extends ChangeNotifier {
         receivedPcmBytes += data.length;
         final first = _responseBytes == 0;
         _responseBytes += data.length;
+        _replyMarkerSeen = false;
+        if (_replyAudioDone) {
+          // More sound after the end was taken: it was the end of a part, not
+          // of the reply's sound.
+          _replyAudioDone = false;
+          _replyMeasuredPace = null;
+        }
         if (first && data.isNotEmpty) _trace('first_pcm');
         final run = _run, epoch = _audioEpoch;
         if (_queuedBytes + data.length > 1440000) {
@@ -827,6 +1018,8 @@ class VoiceSession extends ChangeNotifier {
             });
       case 'localrouter.response.speech_done':
       case 'response.audio.done':
+        _replyMarkerSeen = true;
+        _noteReplyAudioComplete();
         final run = _run, epoch = _audioEpoch;
         _audioTail = _audioTail
             .then((_) async {
@@ -849,15 +1042,35 @@ class VoiceSession extends ChangeNotifier {
       case 'localrouter.job.done':
         onTask(owner!, e);
       case 'response.done':
-        if (response != null && _traceResponse != null && response != _traceResponse) break;
+        if (response != null &&
+            _traceResponse != null &&
+            response != _traceResponse) {
+          break;
+        }
         _trace('response_done', {'result': e['response']?['status']});
         thinking = false;
         final result = e['response'] as Map? ?? {};
+        if (result['status'] == 'completed' ||
+            result['status'] == 'incomplete') {
+          _replyEnded = true;
+          _noteReplyAudioComplete();
+        } else if (result['status'] == 'failed' && _response != null) {
+          _replyFailed = true;
+        }
         if (result['status'] == 'completed') {
           for (final item in result['output'] as List? ?? []) {
-            if (item is! Map || item['type'] != 'message' || item['role'] != 'assistant' || item['id'] is! String) continue;
+            if (item is! Map ||
+                item['type'] != 'message' ||
+                item['role'] != 'assistant' ||
+                item['id'] is! String) {
+              continue;
+            }
             final content = item['content'] as List? ?? [];
-            final text = content.whereType<Map>().map((part) => part['text'] ?? part['transcript']).whereType<String>().join();
+            final text = content
+                .whereType<Map>()
+                .map((part) => part['text'] ?? part['transcript'])
+                .whereType<String>()
+                .join();
             if (text.isNotEmpty) _finalText(item['id'] as String, text);
           }
         }
@@ -888,6 +1101,9 @@ class VoiceSession extends ChangeNotifier {
           break;
         }
         thinking = false;
+        // The server's word that the speech failed comes just before
+        // `response.done`: the mark is kept from this moment.
+        if (error['code'] == 'speech_failed') _replyFailed = true;
         _fail(
           error['code'] == 'speech_failed'
               ? '语音生成失败，文字回复仍可查看'
@@ -905,7 +1121,12 @@ class VoiceSession extends ChangeNotifier {
 
   void _finalText(String id, String text) {
     final m = _bot(id);
-    _trace('text_final', {'item_id': id, 'streamed_chars': m.text.length, 'final_chars': text.length, 'text_changed': m.text != text});
+    _trace('text_final', {
+      'item_id': id,
+      'streamed_chars': m.text.length,
+      'final_chars': text.length,
+      'text_changed': m.text != text,
+    });
     m.text = text;
     lastBot = text;
   }
@@ -924,6 +1145,7 @@ class VoiceSession extends ChangeNotifier {
     if (_wire != wire || run != _run || !_wanted) return;
     _wire = null;
     _resetLevels();
+    _markSpeechCut();
     _audioEpoch++;
     unawaited(_subscription?.cancel());
     _subscription = null;
@@ -1044,6 +1266,9 @@ class VoiceSession extends ChangeNotifier {
   Future<void> _stop() async {
     _trace('disconnect');
     _traceResponse = null;
+    // What the last reply showed of the voice's speed is kept for the next call.
+    _adoptMeasuredPace();
+    playbackPaused = false;
     _wanted = false;
     _sessionUpdates.clear();
     _latestSessionUpdate = _confirmedSessionUpdate = null;

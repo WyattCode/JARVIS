@@ -1,21 +1,24 @@
-import 'completed_works.dart';
 import 'action_menu.dart';
-import 'audio_waveform.dart';
+import 'completed_works.dart';
 
 import 'dart:async';
-
-import '../model/fold_proportions.dart';
+import 'dart:math' as math;
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../state/jarvis_controller.dart';
-import 'voice_identity_stage.dart';
+import '../voice/audio_levels.dart';
+import 'audio_waveform.dart';
+import 'call_wave_glow.dart';
+import 'call_mode_toggle.dart';
+import 'call_talk_button.dart';
+import '../model/fold_proportions.dart';
 import 'login_art.dart' show ReactorMode;
-import 'call_controls.dart';
-import 'voice_mode_selector.dart';
+import 'spoken_text_view.dart';
+import 'voice_identity_stage.dart';
 import 'voice_picker.dart';
-import 'follow_scroll.dart';
 
 class VoicePage extends StatefulWidget {
   const VoicePage({super.key, required this.controller});
@@ -39,7 +42,7 @@ class _VoiceOverlayState extends State<VoiceOverlay>
   late final AnimationController transition =
       AnimationController(
         vsync: this,
-        duration: const Duration(milliseconds: 180),
+        duration: const Duration(milliseconds: 380),
         value: widget.open ? 1 : 0,
       )..addStatusListener((status) {
         if (status == AnimationStatus.dismissed &&
@@ -53,7 +56,7 @@ class _VoiceOverlayState extends State<VoiceOverlay>
   void didChangeDependencies() {
     super.didChangeDependencies();
     transition.duration = Duration(
-      milliseconds: MediaQuery.disableAnimationsOf(context) ? 0 : 180,
+      milliseconds: MediaQuery.disableAnimationsOf(context) ? 0 : 380,
     );
   }
 
@@ -84,20 +87,23 @@ class _VoiceOverlayState extends State<VoiceOverlay>
             excluding: !widget.open,
             child: IgnorePointer(
               ignoring: !widget.open,
-              child: FadeTransition(
-                opacity: transition,
-                child: SlideTransition(
-                  position:
-                      Tween<Offset>(
-                            begin: const Offset(0, .015),
-                            end: Offset.zero,
-                          )
-                          .chain(CurveTween(curve: Curves.easeOutCubic))
-                          .animate(transition),
-                  child: TickerMode(
-                    enabled: widget.open,
-                    child: VoicePage(controller: widget.controller),
-                  ),
+              // A full-screen modal: it slides up from the bottom edge, and
+              // down again when it goes.
+              child: SlideTransition(
+                position:
+                    Tween<Offset>(
+                      begin: const Offset(0, 1),
+                      end: Offset.zero,
+                    ).animate(
+                      CurvedAnimation(
+                        parent: transition,
+                        curve: Curves.easeOutCubic,
+                        reverseCurve: Curves.easeInCubic,
+                      ),
+                    ),
+                child: TickerMode(
+                  enabled: widget.open,
+                  child: VoicePage(controller: widget.controller),
                 ),
               ),
             ),
@@ -105,8 +111,22 @@ class _VoiceOverlayState extends State<VoiceOverlay>
         );
 }
 
+/// The call page, laid out as the iOS app's: the reactor with the status and
+/// the level bars above, the last turn's words under them (what you said in a
+/// pill on the right, the reply plain and lit as the voice says it), the round
+/// talk button below; the buttons (minimize, works, voice, the way of talking)
+/// in a bar along the top, or in a strip at the side when held sideways, and
+/// the cross that ends the call at the corner. A tap anywhere else holds
+/// JARVIS's voice, and the next one lets it go on.
 class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
-  final textScroll = FollowScrollController();
+  final transcriptScroll = ScrollController();
+  final transcriptKey = GlobalKey();
+
+  /// The words are brought to the sentence being said; for a few seconds after
+  /// a hand has moved them they are left alone.
+  DateTime handMoved = DateTime.fromMillisecondsSinceEpoch(0);
+  int pointersDown = 0;
+  String shownYou = '';
   Object? identityOwner;
   bool hasTranscript = false;
   final sources = <Object>{};
@@ -116,7 +136,7 @@ class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
     unawaited(v.hold());
     if (!wasHeld && v.held) {
       // Use the system's light touch effect; haptics must never block capture.
-      unawaited(HapticFeedback.lightImpact().catchError((Object _) {}));
+      unawaited(HapticFeedback.mediumImpact().catchError((Object _) {}));
     }
   }
 
@@ -134,6 +154,7 @@ class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
     if (cancel) {
       widget.controller.voice.cancelHold();
     } else {
+      unawaited(HapticFeedback.lightImpact().catchError((Object _) {}));
       widget.controller.voice.release();
     }
   }
@@ -141,6 +162,14 @@ class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
   void cancelPress() {
     sources.clear();
     if (widget.controller.voice.held) widget.controller.voice.cancelHold();
+  }
+
+  /// A tap holds JARVIS's voice while it speaks; the next one lets it go on
+  /// from the same word.
+  void togglePause() {
+    if (widget.controller.voice.togglePlaybackPause()) {
+      unawaited(HapticFeedback.lightImpact().catchError((Object _) {}));
+    }
   }
 
   @override
@@ -191,7 +220,7 @@ class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
   void dispose() {
     HardwareKeyboard.instance.removeHandler(keyboard);
     WidgetsBinding.instance.removeObserver(this);
-    textScroll.dispose();
+    transcriptScroll.dispose();
     if (widget.controller.voice.held) widget.controller.voice.cancelHold();
     super.dispose();
   }
@@ -203,134 +232,175 @@ class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
     if (mounted) await v.start(owner);
   }
 
-  Widget header(bool short, bool compactWorks) {
-    final v = widget.controller.voice;
-    final recovery = short && v.needsRecovery;
-    final showWorks = compactWorks && v.owner?.tasks.isNotEmpty == true;
-    final extras = recovery || showWorks;
-    final sideWidth = extras ? 96.0 : 48.0;
-    final name =
-        v.speech?.voices.where((x) => x.id == v.voice).firstOrNull?.name ??
-        v.voice;
-    return SizedBox(
-      height: short ? 48 : 56,
-      child: Row(
-        children: [
-          SizedBox(
-            width: sideWidth,
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: IconButton(
-                tooltip: '收起通话界面',
-                onPressed: v.minimize,
-                icon: const Icon(Icons.expand_more, size: 20),
-              ),
-            ),
-          ),
-          Expanded(
-            child: TextButton(
-              key: const Key('voice-name'),
-              onPressed: () => showVoicePicker(context, widget.controller),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.graphic_eq, size: 18),
-                  const SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      name.isEmpty ? '选择音色' : name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  const Icon(Icons.expand_more, size: 16),
-                ],
-              ),
-            ),
-          ),
-          SizedBox(
-            width: sideWidth,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                if (extras)
-                  JarvisActionMenu(
-                    tooltip: '更多通话操作',
-                    actions: [
-                      if (recovery)
-                        const JarvisMenuAction(
-                          'recover',
-                          '恢复语音',
-                          icon: Icons.refresh,
-                        ),
-                      if (showWorks)
-                        const JarvisMenuAction(
-                          'works',
-                          '生成作品',
-                          icon: Icons.collections_outlined,
-                        ),
-                    ],
-                    onSelected: (value) {
-                      if (value == 'works') {
-                        works();
-                      } else {
-                        unawaited(recoverVoice());
-                      }
-                    },
-                  ),
-                HangupButton(onPressed: v.stop),
-              ],
-            ),
-          ),
-        ],
+  void works() {
+    unawaited(
+      showGeneratedWorks(
+        context,
+        widget.controller,
+        conversationId: widget.controller.voice.conversationId,
       ),
     );
   }
 
-  Widget transcript() {
-    final v = widget.controller.voice;
-    return textScroll.wrap(
-      SingleChildScrollView(
-        key: const Key('voice-transcript'),
-        controller: textScroll,
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (v.lastYou.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: SelectableText(
-                  '“${v.lastYou}”',
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    fontSize: widget.controller.settings.messageFontSize,
-                    height: 1.5,
-                  ),
-                ),
-              ),
-            if (v.lastBot.isNotEmpty)
-              SelectableText(
-                v.lastBot,
-                style: TextStyle(
-                  fontSize: widget.controller.settings.messageFontSize,
-                  height: 1.6,
-                ),
-              ),
-          ],
+  void chooseMode(String mode) {
+    sources.clear();
+    final c = widget.controller;
+    c.voice.cancelHold();
+    c.changeSettings((s) => s.voiceMode = mode);
+  }
+
+  /// Brings the line the voice is on to about a quarter of the way down the
+  /// words, a line at a time, unless a hand has just moved them (then the words
+  /// are left to be read where they are, and the next line after a pause takes
+  /// them back).
+  void follow(Rect line) {
+    if (!transcriptScroll.hasClients || pointersDown > 0) return;
+    if (DateTime.now().difference(handMoved) < const Duration(seconds: 3)) {
+      return;
+    }
+    final box = transcriptKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return;
+    final position = transcriptScroll.position;
+    final top = box.localToGlobal(Offset.zero).dy;
+    final target =
+        (position.pixels + (line.top - (top + box.size.height * .25))).clamp(
+          0.0,
+          position.maxScrollExtent,
+        );
+    if ((target - position.pixels).abs() <= 2) return;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      transcriptScroll.jumpTo(target);
+    } else {
+      unawaited(
+        transcriptScroll.animateTo(
+          target,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOutCubic,
+        ),
+      );
+    }
+  }
+
+  Widget youPill(String text, double size) {
+    final colors = Theme.of(context).colorScheme;
+    return Align(
+      alignment: Alignment.centerRight,
+      child: Padding(
+        padding: const EdgeInsets.only(left: 48),
+        child: DecoratedBox(
+          key: const Key('voice-you'),
+          decoration: BoxDecoration(
+            color: colors.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: colors.outlineVariant, width: .5),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+            child: Text(
+              text,
+              style: TextStyle(fontSize: size, color: colors.onSurface),
+            ),
+          ),
         ),
       ),
     );
   }
 
-  Widget controls(bool short) {
+  Widget transcript() {
+    final c = widget.controller, v = c.voice;
+    final size = c.settings.messageFontSize;
+    if (shownYou != v.lastYou) {
+      shownYou = v.lastYou;
+      // A new turn starts at the top of its words.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && transcriptScroll.hasClients) {
+          transcriptScroll.jumpTo(0);
+        }
+      });
+    }
+    final scroll = Listener(
+      onPointerDown: (_) {
+        pointersDown++;
+        handMoved = DateTime.now();
+      },
+      onPointerUp: (_) {
+        pointersDown = math.max(0, pointersDown - 1);
+        handMoved = DateTime.now();
+      },
+      onPointerCancel: (_) {
+        pointersDown = math.max(0, pointersDown - 1);
+        handMoved = DateTime.now();
+      },
+      child: SingleChildScrollView(
+        key: const Key('voice-transcript'),
+        controller: transcriptScroll,
+        child: KeyedSubtree(
+          key: transcriptKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (v.lastYou.isNotEmpty) youPill(v.lastYou, size),
+              if (v.lastYou.isNotEmpty && v.lastBot.isNotEmpty)
+                const SizedBox(height: 20),
+              if (v.lastBot.isNotEmpty)
+                SpokenTextView(
+                  text: v.lastBot,
+                  size: size,
+                  progress: () => v.speechProgress,
+                  onLine: follow,
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    // The words fade where they go on past the edge of the area: at the top
+    // once they are scrolled, at the bottom while there is more below.
+    return NotificationListener<ScrollMetricsNotification>(
+      onNotification: (_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() {});
+        });
+        return false;
+      },
+      child: AnimatedBuilder(
+        animation: transcriptScroll,
+        builder: (context, child) {
+          final p = transcriptScroll.hasClients
+              ? transcriptScroll.position
+              : null;
+          final top = p == null ? 0.0 : math.min(28.0, math.max(0.0, p.pixels));
+          final bottom = p == null
+              ? 0.0
+              : math.min(28.0, math.max(0.0, p.maxScrollExtent - p.pixels));
+          return ShaderMask(
+            blendMode: BlendMode.dstIn,
+            shaderCallback: (rect) {
+              final h = rect.height;
+              return LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: const [
+                  Colors.transparent,
+                  Colors.black,
+                  Colors.black,
+                  Colors.transparent,
+                ],
+                stops: [0, h > 0 ? top / h : 0, h > 0 ? 1 - bottom / h : 1, 1],
+              ).createShader(rect);
+            },
+            child: child,
+          );
+        },
+        child: scroll,
+      ),
+    );
+  }
+
+  Widget talk() {
     final c = widget.controller, v = c.voice;
     final ptt = c.settings.voiceMode == 'ptt';
-    final colors = Theme.of(context).colorScheme;
-    final dark = colors.brightness == Brightness.dark;
-    const energy = Color(0xff8fdceb);
-    final ink = v.held ? const Color(0xff152126) : colors.onSurface;
+    final muted = v.mutedInVad;
     void accessibleToggle() {
       sources.clear();
       if (v.held) {
@@ -345,175 +415,194 @@ class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
         ? (v.error == null ? '等待连接' : '等待恢复')
         : ptt
         ? (v.held ? '松开发送' : '按住说话')
-        : (v.muted ? '已静音' : '正在聆听');
-    return Padding(
-      padding: EdgeInsets.fromLTRB(20, 4, 20, short ? 6 : 8),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth:
-              FoldProportions.isFold(
-                MediaQuery.sizeOf(context).width,
-                MediaQuery.sizeOf(context).height,
-              )
-              ? FoldProportions.voiceActionWidth(
-                  FoldProportions.voiceWidth(
-                    MediaQuery.sizeOf(context).width,
-                    MediaQuery.sizeOf(context).height,
-                    paneWidth:
-                        MediaQuery.sizeOf(context).width -
-                        MediaQuery.paddingOf(context).horizontal,
-                  ),
-                )
-              : 360,
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            VoiceModeSelector(
-              value: c.settings.voiceMode,
-              onChanged: (mode) {
-                sources.clear();
-                v.cancelHold();
-                c.changeSettings((s) => s.voiceMode = mode);
-              },
-            ),
-            SizedBox(height: short ? 6 : 10),
-            Listener(
-              key: const Key('voice-talk'),
-              onPointerDown: (e) {
-                if (ptt) down(e.pointer);
-              },
-              onPointerUp: (e) {
-                if (ptt) up(e.pointer);
-              },
-              onPointerCancel: (e) => up(e.pointer, cancel: true),
-              child: Semantics(
-                button: true,
-                label: label,
-                hint: ptt
-                    ? accessibility
-                          ? (v.held ? '双击结束录音并发送' : '双击开始录音，再次双击发送')
-                          : '长按说话，松开发送'
-                    : '',
-                enabled: v.ready,
-                onTap: ptt && v.ready ? accessibleToggle : null,
-                onLongPress: ptt && v.ready ? accessibleToggle : null,
-                child: AnimatedOpacity(
-                  opacity: v.ready ? 1 : .5,
-                  duration: Duration(
-                    milliseconds: MediaQuery.disableAnimationsOf(context)
-                        ? 0
-                        : 120,
-                  ),
-                  child: AnimatedScale(
-                    scale: v.held ? .96 : 1,
-                    curve: Curves.easeOutCubic,
-                    duration: Duration(
-                      milliseconds: MediaQuery.disableAnimationsOf(context)
-                          ? 0
-                          : (v.held ? 80 : 160),
-                    ),
-                    child: AnimatedContainer(
-                      key: const Key('voice-hold-surface'),
-                      curve: Curves.easeOutCubic,
-                      duration: Duration(
-                        milliseconds: MediaQuery.disableAnimationsOf(context)
-                            ? 0
-                            : (v.held ? 80 : 160),
-                      ),
-                      constraints: BoxConstraints(minHeight: short ? 48 : 56),
-                      decoration: BoxDecoration(
-                        gradient: v.held
-                            ? LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  Color.lerp(energy, Colors.white, .20)!,
-                                  energy,
-                                  Color.lerp(
-                                    energy,
-                                    const Color(0xff408eac),
-                                    .12,
-                                  )!,
-                                ],
-                              )
-                            : null,
-                        color: v.held
-                            ? energy
-                            : dark
-                            ? const Color(0xff242426)
-                            : colors.surfaceContainerHigh,
-                        border: Border.all(
-                          color: v.held
-                              ? Color.lerp(energy, Colors.white, .55)!
-                              : colors.outline.withValues(alpha: .8),
-                        ),
-                        borderRadius: BorderRadius.circular(20),
-                        boxShadow: v.held
-                            ? [
-                                BoxShadow(
-                                  color: energy.withValues(alpha: .34),
-                                  blurRadius: 22,
-                                  spreadRadius: 2,
-                                ),
-                              ]
-                            : null,
-                      ),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(18),
-                        onTap: !ptt && v.ready ? v.toggleMute : null,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 12,
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                v.muted
-                                    ? Icons.mic_off_outlined
-                                    : v.held
-                                    ? Icons.mic_rounded
-                                    : Icons.mic_none,
-                                size: 22,
-                                color: ink,
-                              ),
-                              const SizedBox(width: 10),
-                              Flexible(
-                                child: Text(
-                                  label,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w600,
-                                    color: ink,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
+        : (muted ? '已静音' : '正在聆听');
+    return Listener(
+      key: const Key('voice-talk'),
+      onPointerDown: (e) {
+        if (ptt) down(e.pointer);
+      },
+      onPointerUp: (e) {
+        if (ptt) up(e.pointer);
+      },
+      onPointerCancel: (e) => up(e.pointer, cancel: true),
+      child: Semantics(
+        button: true,
+        label: !ptt && v.ready ? (muted ? '取消静音' : '静音') : label,
+        value: !ptt && v.ready ? label : null,
+        hint: ptt
+            ? accessibility
+                  ? (v.held ? '双击结束录音并发送' : '双击开始录音，再次双击发送')
+                  : '长按说话，松开发送'
+            : '',
+        enabled: v.ready,
+        onTap: ptt && v.ready ? accessibleToggle : null,
+        onLongPress: ptt && v.ready ? accessibleToggle : null,
+        // The talk button keeps its own touches: a tap on it is not the tap
+        // that holds JARVIS's voice.
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: !ptt && v.ready
+              ? () {
+                  unawaited(
+                    HapticFeedback.mediumImpact().catchError((Object _) {}),
+                  );
+                  v.toggleMute();
+                }
+              : () {},
+          child: CallTalkButton(
+            ptt: ptt,
+            ready: v.ready,
+            held: v.held,
+            muted: muted,
+            listening: !ptt && v.ready && !muted,
+          ),
         ),
       ),
     );
   }
 
-  void works() {
-    unawaited(
-      showGeneratedWorks(
-        context,
-        widget.controller,
-        conversationId: widget.controller.voice.conversationId,
+  Widget barButton({
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback onPressed,
+    Key? key,
+  }) => IconButton(
+    key: key,
+    tooltip: tooltip,
+    onPressed: onPressed,
+    iconSize: 20,
+    style: IconButton.styleFrom(
+      minimumSize: const Size(44, 44),
+      fixedSize: const Size(44, 44),
+      foregroundColor: Theme.of(context).colorScheme.onSurface,
+    ),
+    icon: Icon(icon),
+  );
+
+  String voiceName() {
+    final v = widget.controller.voice;
+    return v.speech?.voices.where((x) => x.id == v.voice).firstOrNull?.name ??
+        v.voice;
+  }
+
+  /// The buttons of the call, besides minimize and the cross: recovering a lost
+  /// voice and the generated works when there are any, the voice, and the way
+  /// of talking.
+  List<Widget> barItems({required bool vertical}) {
+    final c = widget.controller, v = c.voice;
+    final name = voiceName();
+    final tasks = v.owner?.tasks.length ?? 0;
+    final recover = v.needsRecovery
+        ? barButton(
+            key: const Key('voice-recover'),
+            tooltip: '恢复语音',
+            icon: Icons.refresh,
+            onPressed: () => unawaited(recoverVoice()),
+          )
+        : null;
+    final works = tasks > 0
+        ? barButton(
+            key: const Key('voice-works'),
+            tooltip: '作品 · $tasks',
+            icon: Icons.photo_library_outlined,
+            onPressed: this.works,
+          )
+        : null;
+    final voice = barButton(
+      key: const Key('voice-name'),
+      tooltip: '音色：${name.isEmpty ? '未选择' : name}',
+      icon: Icons.volume_up_outlined,
+      onPressed: () => showVoicePicker(context, c),
+    );
+    final mode = CallModeToggle(
+      key: const Key('voice-mode'),
+      ptt: c.settings.voiceMode == 'ptt',
+      horizontal: !vertical,
+      onChanged: chooseMode,
+    );
+    // The switch, then the voice, the works and recovering joined in one glass
+    // capsule (left to right along the top, top to bottom along the side), as
+    // iOS stacks its bar items.
+    return [
+      mode,
+      _BarCluster(vertical: vertical, children: [voice, ?works, ?recover]),
+    ];
+  }
+
+  Widget minimizeButton() => barButton(
+    key: const Key('voice-minimize'),
+    tooltip: '收起通话界面',
+    icon: Icons.expand_more,
+    onPressed: widget.controller.voice.minimize,
+  );
+
+  /// The cross that ends the call: a plain cross, not a telephone.
+  Widget closeButton() {
+    final colors = Theme.of(context).colorScheme;
+    return IconButton(
+      key: const Key('voice-close'),
+      tooltip: '结束语音通话',
+      onPressed: widget.controller.voice.stop,
+      style: IconButton.styleFrom(
+        backgroundColor: colors.onSurface,
+        foregroundColor: colors.surface,
+        minimumSize: const Size(48, 48),
+        fixedSize: const Size(48, 48),
+        shape: const CircleBorder(),
+        tapTargetSize: MaterialTapTargetSize.padded,
       ),
+      icon: const Icon(Icons.close, size: 22),
+    );
+  }
+
+  /// The light behind the call, in two directions: JARVIS's cyan comes down
+  /// from the top edge and swells with its voice; yours rises from the bottom
+  /// edge, pale silver, and swells with yours; at rest only a faint cyan at the
+  /// foot.
+  Widget glow(bool vad, bool muted) {
+    final v = widget.controller.voice;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final jarvis = dark ? const Color(0xff8fdceb) : const Color(0xff137589);
+    final silver = dark ? const Color(0xffe0e0e0) : const Color(0xff596b80);
+    return ValueListenableBuilder<AudioLevels>(
+      valueListenable: v.levels,
+      builder: (context, levels, _) {
+        // How bright each light is, and how loud the sound that shapes it
+        // (the level bars' own scaling: 9 for the reply, 14 for the
+        // microphone).
+        var topBright = 0.0, topLevel = 0.0;
+        var bottomBright = .1, bottomLevel = 0.0;
+        var bottom = jarvis;
+        if (v.expressing || levels.playing) {
+          topBright = math.min(.62, .26 + levels.output * 6);
+          topLevel = math.min(1.0, levels.output * 9);
+          bottomBright = 0;
+        } else if (v.held || (vad && v.ready && !muted && levels.input > .02)) {
+          bottom = silver;
+          bottomBright = math.min(.5, .2 + levels.input * 8);
+          bottomLevel = math.min(1.0, levels.input * 14);
+        }
+        return Stack(
+          children: [
+            Positioned.fill(
+              child: CallWaveGlow(
+                fromTop: true,
+                color: jarvis,
+                intensity: topBright,
+                level: topLevel,
+              ),
+            ),
+            Positioned.fill(
+              child: CallWaveGlow(
+                fromTop: false,
+                color: bottom,
+                intensity: bottomBright,
+                level: bottomLevel,
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -527,101 +616,205 @@ class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
         hasTranscript = false;
       }
       hasTranscript =
-          hasTranscript ||
-          v.held ||
-          v.lastYou.isNotEmpty ||
-          v.lastBot.isNotEmpty;
-      textScroll.followLatest();
+          hasTranscript || v.lastYou.isNotEmpty || v.lastBot.isNotEmpty;
+      final ptt = c.settings.voiceMode == 'ptt', vad = !ptt;
+      final muted = v.mutedInVad;
+      // "已就绪" alone says nothing to someone who has not spoken yet:
+      // hands-free it is listening, push-to-talk it asks for the button.
+      final idle = v.status == '已就绪';
+      final staleMute = !vad && v.muted && v.status == '已静音';
+      final next = v.needsRecovery
+          ? '需要恢复语音'
+          : v.ready && idle
+          ? (vad ? '正在聆听' : '按住按钮说话')
+          : staleMute
+          ? '按住按钮说话'
+          : v.status;
+      final status = v.playbackPaused ? '已暂停' : next;
+      final hint = v.playbackPaused
+          ? '再点一下继续'
+          : v.error ?? (staleMute || (v.ready && idle && !vad) ? '' : v.hint);
       return Material(
         color: Theme.of(context).colorScheme.surface,
-        child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, bounds) {
-              final compact = hasTranscript || bounds.maxHeight < 480;
-              final window = MediaQuery.sizeOf(context);
-              final fold = FoldProportions.isFold(window.width, window.height);
-              final voiceWidth = fold
-                  ? FoldProportions.voiceWidth(
-                      window.width,
-                      window.height,
-                      paneWidth: bounds.maxWidth,
-                    )
-                  : bounds.maxWidth - 40;
-              return Column(
-                children: [
-                  Padding(
-                    padding: EdgeInsets.symmetric(
-                      horizontal:
-                          FoldProportions.isFold(window.width, window.height)
-                          ? bounds.maxWidth * .02
-                          : 0,
-                    ),
-                    child: header(
-                      bounds.maxHeight < 500,
-                      bounds.maxHeight < 420,
-                    ),
+        child: LayoutBuilder(
+          builder: (context, bounds) {
+            final landscape =
+                bounds.maxWidth > bounds.maxHeight &&
+                FoldProportions.isFold(bounds.maxWidth, bounds.maxHeight);
+            final short = bounds.maxHeight < 520;
+            final compact = hasTranscript || bounds.maxHeight < 480;
+            Widget stage(double width) => Center(
+              child: SizedBox(
+                width: width,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: VoiceIdentityStage(
+                    key: ValueKey('voice-identity-${v.conversationId}'),
+                    compact: compact,
+                    windowHeight: bounds.maxHeight,
+                    identity: v.conversationId,
+                    minimumTranscriptExtent:
+                        (MediaQuery.textScalerOf(context)
+                                        .scale(c.settings.messageFontSize) *
+                                    1.6 +
+                                16)
+                            .clamp(48.0, 200.0)
+                            .toDouble(),
+                    status: status,
+                    hintIsError: v.error != null,
+                    hint: hint,
+                    mode: v.expressing
+                        ? ReactorMode.speaking
+                        : v.thinking
+                        ? ReactorMode.thinking
+                        : v.ready && !muted && (v.held || vad)
+                        ? ReactorMode.listening
+                        : ReactorMode.idle,
+                    onTap: togglePause,
+                    waveform: AudioWaveform(levels: v.levels),
+                    transcript: transcript(),
                   ),
-                  Expanded(
-                    child: Center(
-                      child: SizedBox(
-                        width: voiceWidth,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 8),
-                          child: VoiceIdentityStage(
-                            key: ValueKey('voice-identity-${v.conversationId}'),
-                            compact: compact,
-                            windowHeight: bounds.maxHeight,
-                            identity: v.conversationId,
-                            minimumTranscriptExtent:
-                                (MediaQuery.textScalerOf(context).scale(
-                                              c.settings.messageFontSize,
-                                            ) *
-                                            1.6 +
-                                        16)
-                                    .clamp(48.0, 200.0)
-                                    .toDouble(),
-                            status: v.needsRecovery ? '需要恢复语音' : v.status,
-                            hint: v.error ?? v.hint,
-                            mode: v.expressing
-                                ? ReactorMode.speaking
-                                : v.thinking
-                                ? ReactorMode.thinking
-                                : v.ready &&
-                                      !v.muted &&
-                                      (v.held || c.settings.voiceMode == 'vad')
-                                ? ReactorMode.listening
-                                : ReactorMode.idle,
-                            onTap: () => v.interrupt(source: 'orb_tap'),
-                            waveform: AudioWaveform(levels: v.levels),
-                            transcript: transcript(),
-                          ),
+                ),
+              ),
+            );
+            // The words and the talk button. Sideways in a short window (a
+            // phone on its side) the words need the room, so the button
+            // stands at the left, low, and the words take the rest.
+            Widget body = LayoutBuilder(
+              builder: (context, area) {
+                final width = math.min(area.maxWidth - 56, 760.0);
+                if (short) {
+                  return Row(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(left: 28, bottom: 12),
+                        child: Align(
+                          alignment: Alignment.bottomCenter,
+                          child: talk(),
                         ),
+                      ),
+                      Expanded(
+                        child: stage(
+                          math.max(0.0, area.maxWidth - 28 - 80 - 20 - 28),
+                        ),
+                      ),
+                    ],
+                  );
+                }
+                return Column(
+                  children: [
+                    Expanded(child: stage(width)),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6, bottom: 28),
+                      child: talk(),
+                    ),
+                  ],
+                );
+              },
+            );
+            final Widget content;
+            if (landscape) {
+              // Held sideways the buttons stand in a strip at the right edge.
+              content = Row(
+                children: [
+                  Expanded(child: body),
+                  SizedBox(
+                    width: 64,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Column(
+                        children: [
+                          minimizeButton(),
+                          const SizedBox(height: 8),
+                          for (final item in barItems(vertical: true)) ...[
+                            item,
+                            const SizedBox(height: 8),
+                          ],
+                          const Spacer(),
+                          closeButton(),
+                        ],
                       ),
                     ),
                   ),
-                  if (v.needsRecovery && bounds.maxHeight >= 500)
-                    TextButton.icon(
-                      onPressed: recoverVoice,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('恢复语音'),
-                    ),
-                  controls(bounds.maxHeight < 500),
-                  if (v.owner?.tasks.isNotEmpty == true &&
-                      bounds.maxHeight >= 420) ...[
-                    const Divider(height: 1),
-                    ListTile(
-                      dense: true,
-                      title: Text('生成作品 · ${v.owner!.tasks.length}'),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: works,
-                    ),
-                  ],
                 ],
               );
-            },
-          ),
+            } else {
+              content = Stack(
+                children: [
+                  Column(
+                    children: [
+                      SizedBox(
+                        height: 56,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          child: Row(
+                            children: [
+                              minimizeButton(),
+                              const Spacer(),
+                              for (final item in barItems(vertical: false)) ...[
+                                const SizedBox(width: 4),
+                                item,
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                      Expanded(child: body),
+                    ],
+                  ),
+                  Positioned(right: 16, bottom: 16, child: closeButton()),
+                ],
+              );
+            }
+            return GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: togglePause,
+              child: Stack(
+                children: [
+                  Positioned.fill(child: glow(vad, muted)),
+                  SafeArea(child: content),
+                ],
+              ),
+            );
+          },
         ),
       );
     },
   );
+}
+
+/// The voice, the works and recovering, joined in one glass capsule (as iOS
+/// joins neighbouring bar items).
+class _BarCluster extends StatelessWidget {
+  const _BarCluster({required this.vertical, required this.children});
+  final bool vertical;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final dark = colors.brightness == Brightness.dark;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: colors.onSurface.withValues(alpha: dark ? .12 : .07),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: colors.outlineVariant.withValues(alpha: .5),
+              width: .5,
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(2),
+            child: vertical
+                ? Column(mainAxisSize: MainAxisSize.min, children: children)
+                : Row(mainAxisSize: MainAxisSize.min, children: children),
+          ),
+        ),
+      ),
+    );
+  }
 }

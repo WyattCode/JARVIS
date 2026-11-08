@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:jarvis_android/model/conversation.dart';
 import 'package:jarvis_android/state/jarvis_controller.dart';
 import 'package:jarvis_android/ui/jarvis_app.dart';
+import 'package:jarvis_android/ui/sidebar_list.dart';
 import 'package:jarvis_android/ui/voice_page.dart';
 import 'package:jarvis_android/ui/settings_page.dart';
 import 'package:jarvis_android/ui/status_page.dart';
@@ -113,7 +114,9 @@ void main() {
         ),
         findsOneWidget,
       );
-      await t.tapAt(const Offset(550, 400));
+      // The inner display's list covers the whole window (as on iOS): there is
+      // no page beside it to tap, so it closes with its own button.
+      await t.tap(find.byKey(const Key('close-conversation-page')));
       await t.pump();
       await t.pump(const Duration(milliseconds: 400));
       expect(
@@ -175,7 +178,7 @@ void main() {
         ),
       );
       await t.pump();
-      final tile = find.byType(ListTile).first;
+      final tile = find.byType(ConversationRowTile).first;
       final rect = t.getRect(tile);
       final point = Offset(rect.left + 6, rect.center.dy);
       final background = Theme.of(t.element(tile)).colorScheme.surface;
@@ -232,7 +235,7 @@ void main() {
         t.view.physicalSize = size;
         await t.pumpWidget(MaterialApp(home: StatusPage(controller: c)));
         await t.pump();
-        final row = t.getRect(find.byType(ListTile));
+        final row = t.getRect(find.byKey(const Key('status-row')));
         expect(row.left, greaterThanOrEqualTo(32));
         expect(row.right, lessThanOrEqualTo(size.width - 32));
         expect(t.takeException(), isNull);
@@ -378,8 +381,7 @@ void main() {
       c.current.messages.add(ChatMessage('assistant', '已有回复'));
       await t.pumpWidget(motionHost(c));
       await t.pump();
-      await t.tap(find.byTooltip('会话操作').first);
-      await t.pumpAndSettle();
+      await openConversationMenu(t);
       await t.tap(find.text('重命名').last);
       await t.pumpAndSettle();
       final field = find.descendant(

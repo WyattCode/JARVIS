@@ -23,6 +23,10 @@ abstract class AudioDevice {
     required bool echoCancel,
   }) async {}
   Future<void> dispose() => stop();
+
+  /// Holds what is being played where it is (and lets it go on from there).
+  /// A device that cannot hold goes on playing.
+  Future<void> setPaused(bool paused) async {}
 }
 
 class NativeAudioDevice extends AudioDevice {
@@ -131,6 +135,10 @@ class NativeAudioDevice extends AudioDevice {
     }
     await _output;
   }
+
+  @override
+  Future<void> setPaused(bool paused) =>
+      _method.invokeMethod('setPaused', {'paused': paused});
 
   @override
   Future<void> flush() async {

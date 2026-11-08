@@ -64,7 +64,7 @@ void main() {
           ),
         ),
       );
-      await t.tap(find.byTooltip('下载'));
+      await t.tap(find.text('下载'));
       await t.pump();
       await t.pumpWidget(const SizedBox());
       api.result.complete(Uint8List.fromList([1, 2, 3]));
@@ -163,7 +163,7 @@ void main() {
         ),
       ),
     );
-    await t.tap(find.byTooltip('下载'));
+    await t.tap(find.text('下载'));
     await t.pump();
     api.result.complete(Uint8List.fromList([1, 2, 3]));
     await t.pump();
@@ -185,9 +185,7 @@ void main() {
     final old = c.current.title;
     await t.pumpWidget(MaterialApp(home: JarvisHome(controller: c)));
     await t.pump();
-    await t.tap(find.byTooltip('会话操作').first);
-    await t.pump();
-    await t.pump(const Duration(milliseconds: 150));
+    await openConversationMenu(t);
     await t.tap(find.text('重命名'));
     await t.pump();
     await t.pump(const Duration(milliseconds: 400));

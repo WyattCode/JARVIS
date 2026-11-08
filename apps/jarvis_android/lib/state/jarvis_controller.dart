@@ -417,6 +417,14 @@ class JarvisController extends ChangeNotifier {
     }
   }
 
+  /// A starter card was picked: its prompt goes after what is already written
+  /// (on its own line), not over it.
+  void addStarterPrompt(String prompt) {
+    final draft = current.draft;
+    current.draft = draft.trim().isEmpty ? prompt : '$draft\n$prompt';
+    notifyDraftSuggestion();
+  }
+
   void notifyDraftSuggestion() {
     scheduleSave();
     _changed();
@@ -763,7 +771,11 @@ class JarvisController extends ChangeNotifier {
           (m.text.isNotEmpty || m.calls.isNotEmpty)) {
         out.add({
           'role': 'assistant',
-          'content': m.text.isEmpty ? null : m.status == 'complete' ? m.text : '【未完成回复】\n${m.text}',
+          'content': m.text.isEmpty
+              ? null
+              : m.status == 'complete'
+              ? m.text
+              : '【未完成回复】\n${m.text}',
           if (m.calls.isNotEmpty)
             'tool_calls': m.calls.map((c) => c.toJson()).toList(),
         });
