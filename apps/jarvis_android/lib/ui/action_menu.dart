@@ -81,6 +81,7 @@ class _JarvisActionMenuState extends State<JarvisActionMenu>
   bool open = false;
   Rect anchor = Rect.zero;
   Size window = Size.zero;
+  double insetAtShow = 0;
 
   bool get fit => widget.child != null;
   bool get above => widget.above ?? fit;
@@ -94,8 +95,19 @@ class _JarvisActionMenuState extends State<JarvisActionMenu>
   /// A turn or a fold makes the place it hangs from the wrong one.
   @override
   void didChangeMetrics() {
-    if (open && mounted && viewSize() != window) close(animated: false);
+    if (open && mounted && (viewSize() != window || insetChanged())) {
+      close(animated: false);
+    }
   }
+
+  /// The keyboard coming or going moves the anchor (a chip in the composer
+  /// slides), so the panel would hang in the air.
+  double insets() {
+    final view = View.of(context);
+    return view.viewInsets.bottom / view.devicePixelRatio;
+  }
+
+  bool insetChanged() => (insets() - insetAtShow).abs() > 1;
 
   Size viewSize() {
     final view = View.of(context);
@@ -109,6 +121,7 @@ class _JarvisActionMenuState extends State<JarvisActionMenu>
     if (box is! RenderBox || !box.attached || !box.hasSize) return;
     anchor = box.localToGlobal(Offset.zero) & box.size;
     window = viewSize();
+    insetAtShow = insets();
     open = true;
     JarvisActionMenu._open = this;
     final route = ModalRoute.of(context);
@@ -154,6 +167,7 @@ class _JarvisActionMenuState extends State<JarvisActionMenu>
     entry?.remove();
     if (!animated ||
         !mounted ||
+        !TickerMode.valuesOf(context).enabled ||
         MediaQuery.disableAnimationsOf(context) ||
         !portal.isShowing) {
       motion.stop();
@@ -236,20 +250,26 @@ class _JarvisActionMenuState extends State<JarvisActionMenu>
         child: IntrinsicWidth(
           child: Padding(
             padding: EdgeInsets.all(fit ? 8 : 6),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                for (final action in widget.actions)
-                  _MenuRow(
-                    key: ValueKey('menu-row-${action.value}'),
-                    action: action,
-                    icon: iconOf(action),
-                    chip: fit,
-                    selected: action.selected ?? selectedValue == action.value,
-                    onTap: () => choose(action),
-                  ),
-              ],
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final action in widget.actions)
+                    _MenuRow(
+                      key: ValueKey('menu-row-${action.value}'),
+                      action: action,
+                      icon: iconOf(action),
+                      chip: fit,
+                      selected:
+                          action.selected ?? selectedValue == action.value,
+                      selectable:
+                          selectedValue != null ||
+                          widget.actions.any((a) => a.selected != null),
+                      onTap: () => choose(action),
+                    ),
+                ],
+              ),
             ),
           ),
         ),
@@ -347,10 +367,15 @@ class _MenuRow extends StatelessWidget {
     required this.chip,
     required this.selected,
     required this.onTap,
+    this.selectable = true,
   });
   final JarvisMenuAction action;
   final IconData? icon;
   final bool chip, selected;
+
+  /// The menu chooses one of its rows (otherwise no row says it is or is not
+  /// selected).
+  final bool selectable;
   final VoidCallback onTap;
 
   @override
@@ -360,7 +385,7 @@ class _MenuRow extends StatelessWidget {
     final pill = BorderRadius.circular(chip ? 30 : 18);
     return Semantics(
       button: true,
-      selected: selected,
+      selected: selectable ? selected : null,
       container: true,
       child: Material(
         color: selected

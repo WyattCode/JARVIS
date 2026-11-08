@@ -228,8 +228,9 @@ class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
   Future<void> recoverVoice() async {
     final v = widget.controller.voice, owner = widget.controller.voice.owner;
     if (owner == null) return;
-    await v.stop();
-    if (mounted) await v.start(owner);
+    // The page stays up through it, and the restart does not wait for the page.
+    await v.stop(keepOpen: true);
+    await v.start(owner);
   }
 
   void works() {
@@ -258,15 +259,15 @@ class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
     if (DateTime.now().difference(handMoved) < const Duration(seconds: 3)) {
       return;
     }
-    final box = transcriptKey.currentContext?.findRenderObject();
-    if (box is! RenderBox || !box.hasSize) return;
     final position = transcriptScroll.position;
-    final top = box.localToGlobal(Offset.zero).dy;
+    // The viewport (the scrolling area), not the words that scroll in it: the
+    // line is brought a quarter of the way down what is seen.
+    final viewport = position.context.storageContext.findRenderObject();
+    if (viewport is! RenderBox || !viewport.hasSize) return;
+    final top = viewport.localToGlobal(Offset.zero).dy;
     final target =
-        (position.pixels + (line.top - (top + box.size.height * .25))).clamp(
-          0.0,
-          position.maxScrollExtent,
-        );
+        (position.pixels + (line.top - top) - position.viewportDimension * .25)
+            .clamp(0.0, position.maxScrollExtent);
     if ((target - position.pixels).abs() <= 2) return;
     if (MediaQuery.disableAnimationsOf(context)) {
       transcriptScroll.jumpTo(target);
@@ -646,8 +647,18 @@ class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
             Widget stage(double width) => Center(
               child: SizedBox(
                 width: width,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
+                child: AnimatedPadding(
+                  // 12 under the bar once the words are up, as on iOS; at rest the
+                  // reactor stands 48 below it (inside the stage).
+                  padding: EdgeInsets.only(
+                    top: compact ? 12.0 : 0.0,
+                    bottom: 8,
+                  ),
+                  duration: Duration(
+                    milliseconds: MediaQuery.disableAnimationsOf(context)
+                        ? 0
+                        : 650,
+                  ),
                   child: VoiceIdentityStage(
                     key: ValueKey('voice-identity-${v.conversationId}'),
                     compact: compact,
@@ -705,7 +716,7 @@ class _VoicePageState extends State<VoicePage> with WidgetsBindingObserver {
                   children: [
                     Expanded(child: stage(width)),
                     Padding(
-                      padding: const EdgeInsets.only(top: 6, bottom: 28),
+                      padding: const EdgeInsets.only(top: 6, bottom: 39),
                       child: talk(),
                     ),
                   ],

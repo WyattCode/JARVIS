@@ -242,15 +242,21 @@ class _ConversationSidebarState extends State<ConversationSidebar> {
                   ),
                 ),
                 if (field.text.isNotEmpty)
-                  GestureDetector(
+                  Semantics(
+                    button: true,
+                    label: '清除搜索',
+                    excludeSemantics: true,
                     onTap: () => setState(field.clear),
-                    child: Semantics(
-                      button: true,
-                      label: '清除搜索',
-                      child: Icon(
-                        Icons.cancel,
-                        size: 20,
-                        color: colors.onSurfaceVariant,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => setState(field.clear),
+                      child: SizedBox.square(
+                        dimension: 44,
+                        child: Icon(
+                          Icons.cancel,
+                          size: 20,
+                          color: colors.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   ),
@@ -277,7 +283,12 @@ class _ConversationSidebarState extends State<ConversationSidebar> {
     final colors = Theme.of(context).colorScheme;
     return SafeArea(
       child: Padding(
-        padding: EdgeInsets.only(right: widget.rightGap),
+        // The keyboard (a drawer is not resized by it) does not cover the list's
+        // foot, the "no match" line or the notice. Docked, the body already took it.
+        padding: EdgeInsets.only(
+          right: widget.rightGap,
+          bottom: MediaQuery.viewInsetsOf(context).bottom,
+        ),
         child: Column(
           children: [
             if (widget.mode != SidebarMode.drawer) bar(),
@@ -353,6 +364,12 @@ class _ConversationSidebarState extends State<ConversationSidebar> {
   }
 
   Future<void> confirmDelete(SidebarRow row) async {
+    // One that is being written, or has a call, cannot go: say so at once
+    // (the owner's delete does) instead of asking and then refusing.
+    if (!widget.controller.canDeleteConversation(row.id)) {
+      widget.onDelete(row.id);
+      return;
+    }
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(

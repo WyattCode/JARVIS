@@ -60,6 +60,10 @@ void main() {
   testWidgets(
     'Background completion opens only its owner gallery when explicitly selected',
     (t) async {
+      t.view.devicePixelRatio = 1;
+      t.view.physicalSize = const Size(600, 2400);
+      addTearDown(t.view.resetDevicePixelRatio);
+      addTearDown(t.view.resetPhysicalSize);
       final c = JarvisController(FakeApi(), MemoryVault());
       await c.initialize();
       c.current.tasks.add(ready('current'));
@@ -191,6 +195,10 @@ void main() {
   testWidgets(
     'Another conversation result is retained while a gallery is open',
     (t) async {
+      t.view.devicePixelRatio = 1;
+      t.view.physicalSize = const Size(600, 2400);
+      addTearDown(t.view.resetDevicePixelRatio);
+      addTearDown(t.view.resetPhysicalSize);
       final c = JarvisController(FakeApi(), MemoryVault());
       await c.initialize();
       final other = Conversation('other', title: '后台会话');

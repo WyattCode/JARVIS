@@ -72,7 +72,7 @@ void main() {
 
   testWidgets('Lists the works of every conversation, the newest first, on the '
       'container colour', (t) async {
-    await host(t);
+    await host(t, size: const Size(400, 2400));
     c.current.tasks
       ..add(work('a1'))
       ..add(work('a2'));
@@ -85,11 +85,12 @@ void main() {
         .map((m) => m.task.id)
         .toList();
     expect(ids, ['a2', 'a1', 'b1']);
-    // The sheet gives its cards the container colour (a card reads it from the
-    // card theme).
+    // The sheet gives its cards the container colour.
     final card = t.element(find.byType(MediaCard).first);
     final theme = Theme.of(card);
-    expect(theme.cardTheme.color, theme.colorScheme.surfaceContainer);
+    for (final m in t.widgetList<MediaCard>(find.byType(MediaCard))) {
+      expect(m.color, theme.colorScheme.surfaceContainer);
+    }
     await close(t);
   });
 

@@ -39,7 +39,9 @@ String _tone(Object? state) => switch (state) {
 };
 
 List<StatusRow> statusRows(Map<String, dynamic> data) => [
-  for (final entry in (data['data'] as List? ?? []).whereType<Map>())
+  for (final entry
+      in (data['data'] is List ? data['data'] as List : const [])
+          .whereType<Map>())
     StatusRow(
       displayModelName('${entry['name'] ?? entry['id'] ?? '模型'}'),
       _stateLabels[entry['state']] ?? '状态未知',
@@ -119,7 +121,8 @@ class _StatusPageState extends State<StatusPage> {
   }
 
   String? get memory {
-    final bytes = data?['mem_available_bytes'] as num?;
+    final raw = data?['mem_available_bytes'];
+    final bytes = raw is num ? raw : null;
     return bytes == null
         ? null
         : '可用内存 ${(bytes / 1073741824).toStringAsFixed(1)} GiB';

@@ -68,11 +68,13 @@ class WorksSheetBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = PagePalette.of(context);
-    final theme = Theme.of(context);
     final works = _orderedWorks(controller);
     return CustomScrollView(
       key: const Key('works-sheet'),
       controller: scroll,
+      // Draggable even when what is in it is short (or the sheet cannot be
+      // pulled down to close).
+      physics: const AlwaysScrollableScrollPhysics(),
       slivers: [
         const SliverToBoxAdapter(child: PickerGrabber()),
         const SliverToBoxAdapter(child: PickerTitle('作品')),
@@ -102,25 +104,15 @@ class WorksSheetBody extends StatelessWidget {
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
             // The cards sit on the container colour.
-            sliver: SliverToBoxAdapter(
-              child: Theme(
-                data: theme.copyWith(
-                  cardTheme: theme.cardTheme.copyWith(
-                    color: p.container,
-                    margin: EdgeInsets.zero,
-                  ),
-                ),
-                child: Column(
-                  children: [
-                    for (var i = 0; i < works.length; i++) ...[
-                      if (i > 0) const SizedBox(height: 12),
-                      MediaCard(
-                        key: ValueKey(works[i].id),
-                        task: works[i],
-                        controller: controller,
-                      ),
-                    ],
-                  ],
+            sliver: SliverList.builder(
+              itemCount: works.length,
+              itemBuilder: (context, i) => Padding(
+                padding: EdgeInsets.only(top: i > 0 ? 12 : 0),
+                child: MediaCard(
+                  key: ValueKey(works[i].id),
+                  task: works[i],
+                  controller: controller,
+                  color: p.container,
                 ),
               ),
             ),
@@ -238,7 +230,13 @@ class _CompletedWorksPresenterState extends State<CompletedWorksPresenter> {
   Iterable<MediaTask> get _completed => widget.controller.conversations
       .expand((conversation) => conversation.tasks)
       .where((task) => task.status == 'completed' && task.urls.isNotEmpty);
+
+  /// The conversations already known: the works of one that turns up (an
+  /// imported backup, a deleted one brought back) are old, not news.
+  final _known = <String>{};
+
   void _bind() {
+    _known.addAll(widget.controller.conversations.map((c) => c.id));
     _seen.addAll(_completed.map((task) => task.id));
     widget.controller.addListener(_sync);
   }
@@ -263,12 +261,22 @@ class _CompletedWorksPresenterState extends State<CompletedWorksPresenter> {
     _timer?.cancel();
     _timer = null;
     _seen.clear();
+    _known.clear();
     _pending.clear();
     _notice = false;
     _bind();
   }
 
   void _sync() {
+    for (final conversation in widget.controller.conversations) {
+      if (_known.add(conversation.id)) {
+        _seen.addAll(
+          conversation.tasks
+              .where((task) => task.status == 'completed')
+              .map((task) => task.id),
+        );
+      }
+    }
     for (final task in _completed) {
       if (_seen.add(task.id)) {
         _pending.add(task.id);

@@ -61,8 +61,12 @@ class VoiceSession extends ChangeNotifier {
       _replyEnded = false,
       _replyFailed = false;
   double? _replyMeasuredPace, _replyCutAt;
-  double _speechPace = SpokenText.defaultPace;
-  bool _speechPaceKnown = false;
+  /// How fast each voice speaks, as the last replies showed (seconds per spoken
+  /// character), kept per speech model and voice: a slower voice does not
+  /// inherit the pace of the one before it.
+  final _paces = <String, double>{};
+  String get _paceKey => '${settings().speechModel}.$voice';
+  double get _speechPace => _paces[_paceKey] ?? SpokenText.defaultPace;
 
   /// A tap while JARVIS speaks holds its voice; the next one lets it go on from
   /// the same word.
@@ -81,6 +85,7 @@ class VoiceSession extends ChangeNotifier {
     }
     if (!expressing || previewing) return false;
     playbackPaused = true;
+    _levels(output: 0, playing: false);
     unawaited(_setPaused(true));
     _changed();
     return true;
@@ -140,10 +145,8 @@ class VoiceSession extends ChangeNotifier {
   void _adoptMeasuredPace() {
     final measured = _replyMeasuredPace;
     if (measured == null) return;
-    _speechPace = _speechPaceKnown
-        ? _speechPace * 0.4 + measured * 0.6
-        : measured;
-    _speechPaceKnown = true;
+    final known = _paces[_paceKey];
+    _paces[_paceKey] = known == null ? measured : known * 0.4 + measured * 0.6;
     _replyMeasuredPace = null;
   }
 
@@ -642,9 +645,11 @@ class VoiceSession extends ChangeNotifier {
         });
       }
       final rms = (e['rms'] as num?)?.toDouble() ?? 0;
+      // A held voice makes no sound: the meters and the light rest with it.
+      final sounding = active && !previewing && !playbackPaused;
       _levels(
-        output: active && !previewing && rms.isFinite ? rms.clamp(0.0, 1.0) : 0,
-        playing: active && !previewing,
+        output: sounding && rms.isFinite ? rms.clamp(0.0, 1.0) : 0,
+        playing: sounding,
       );
       if (active != speaking) {
         speaking = active;
@@ -702,10 +707,9 @@ class VoiceSession extends ChangeNotifier {
 
   Future<void> interrupt({String source = 'explicit_interrupt'}) async {
     _trace('cancel', {'source': source, 'server_active': _response != null});
-    if (playbackPaused) {
-      playbackPaused = false;
-      unawaited(_setPaused(false));
-    }
+    // The player's clear (below) lets a held voice go; playing it first would
+    // let a blip of the old speech out.
+    playbackPaused = false;
     _markSpeechCut();
     _audioEpoch++;
     if (_response != null) {
@@ -993,7 +997,7 @@ class VoiceSession extends ChangeNotifier {
         }
         if (first && data.isNotEmpty) _trace('first_pcm');
         final run = _run, epoch = _audioEpoch;
-        if (_queuedBytes + data.length > 1440000) {
+        if (!playbackPaused && _queuedBytes + data.length > 1440000) {
           unawaited(interrupt(source: 'output_backlog'));
           _fail('语音播放积压，已停止当前语音；文字回复已保留');
           break;
@@ -1253,17 +1257,19 @@ class VoiceSession extends ChangeNotifier {
     return _previewClosing;
   }
 
-  Future<void> stop() {
+  /// Ends the call. With [keepOpen] the page stays up (recovering a lost voice
+  /// stops and starts again, and the page must not slide away and back).
+  Future<void> stop({bool keepOpen = false}) {
     _resetLevels();
     if (_stopping) return _closing;
     _stopping = true;
-    _closing = _stop().whenComplete(() {
+    _closing = _stop(keepOpen).whenComplete(() {
       _stopping = false;
     });
     return _closing;
   }
 
-  Future<void> _stop() async {
+  Future<void> _stop(bool keepOpen) async {
     _trace('disconnect');
     _traceResponse = null;
     // What the last reply showed of the voice's speed is kept for the next call.
@@ -1281,7 +1287,7 @@ class VoiceSession extends ChangeNotifier {
     _reconnect?.cancel();
     ready = false;
     held = false;
-    open = false;
+    open = keepOpen && open;
     _tailOpen = false;
     final wire = _wire;
     _wire = null;

@@ -46,6 +46,9 @@ class VoicePickerBody extends StatelessWidget {
     return ListView(
       key: const Key('voice-picker'),
       controller: scroll,
+      // Draggable even when the voices are few (or the sheet cannot be pulled
+      // down to close).
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.zero,
       children: [
         const PickerGrabber(),

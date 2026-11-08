@@ -60,6 +60,9 @@ class PcmPlayer(private val event: (Map<String, Any>) -> Unit) {
             }
             offset = end
         }
+        // The player's hold on this sound is reported now, before the caller is told
+        // it was handed over (or the words would count it nowhere for a moment).
+        publish()
     }
     fun clear(generation: Int) {
         synchronized(lock) {

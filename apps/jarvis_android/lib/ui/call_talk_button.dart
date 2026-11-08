@@ -18,11 +18,13 @@ class _ListeningBarsState extends State<ListeningBars>
   static const heights = [12.0, 22.0, 32.0, 22.0, 12.0];
   late final AnimationController clock = AnimationController(
     vsync: this,
-    duration: const Duration(seconds: 1000),
+    // A day: the bars breathe for as long as a call can last.
+    duration: const Duration(hours: 24),
   );
   late final AnimationController rise = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 220),
+    duration: const Duration(milliseconds: 200),
+    reverseDuration: const Duration(milliseconds: 250),
     value: widget.active ? 1 : 0,
   );
 
@@ -73,7 +75,7 @@ class _ListeningBarsState extends State<ListeningBars>
       child: AnimatedBuilder(
         animation: Listenable.merge([clock, rise]),
         builder: (context, _) {
-          final seconds = clock.value * 1000;
+          final seconds = clock.value * 86400;
           return Row(
             mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
@@ -168,7 +170,7 @@ class CallTalkButton extends StatelessWidget {
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
                             colors: [
-                              Color.lerp(energy, Colors.white, .20)!,
+                              Color.lerp(Colors.white, energy, .5)!,
                               energy,
                               Color.lerp(energy, const Color(0xff408eac), .12)!,
                             ],

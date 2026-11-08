@@ -149,9 +149,17 @@ videoCoverPlayer = (uri, headers) =>
 
 /// How a card in the chat shows a generated picture or video, and what its buttons say (MessageCells.swift TaskCell).
 class MediaCard extends StatefulWidget {
-  const MediaCard({super.key, required this.task, required this.controller});
+  const MediaCard({
+    super.key,
+    required this.task,
+    required this.controller,
+    this.color,
+  });
   final MediaTask task;
   final JarvisController controller;
+
+  /// The card's fill (the works sheet has them on the container colour).
+  final Color? color;
   static const maxWidth = 560.0;
   @override
   State<MediaCard> createState() => _MediaCardState();
@@ -288,7 +296,7 @@ class _MediaCardState extends State<MediaCard> {
           child: Container(
             clipBehavior: Clip.antiAlias,
             decoration: BoxDecoration(
-              color: palette.card,
+              color: widget.color ?? palette.card,
               borderRadius: BorderRadius.circular(16),
             ),
             foregroundDecoration: BoxDecoration(
@@ -753,6 +761,8 @@ class _AuthenticatedImageState extends State<AuthenticatedImage> {
           image: true,
           label: label,
           button: loaded && widget.opensViewer,
+          // The tap that opens it must stay reachable to a screen reader.
+          onTap: loaded && widget.opensViewer ? openViewer : null,
           excludeSemantics: loaded,
           child: SizedBox(
             width: width,
@@ -952,12 +962,17 @@ class _MediaPreviewState extends State<MediaPreview>
                   icon: const Icon(Icons.close),
                 ),
                 actions: [
-                  IconButton(
-                    tooltip: '复制提示词',
-                    onPressed: () =>
-                        Clipboard.setData(ClipboardData(text: widget.prompt)),
-                    icon: const Icon(Icons.copy_outlined),
-                  ),
+                  // A picture from a reply has no prompt: copying it would only empty
+                  // the clipboard.
+                  if (widget.prompt.isNotEmpty)
+                    IconButton(
+                      tooltip: '复制提示词',
+                      onPressed: () {
+                        HapticFeedback.lightImpact().catchError((Object _) {});
+                        Clipboard.setData(ClipboardData(text: widget.prompt));
+                      },
+                      icon: const Icon(Icons.copy_outlined),
+                    ),
                   IconButton(
                     tooltip: '分享',
                     onPressed: saving ? null : () => save(true),
@@ -1371,6 +1386,7 @@ class _AttachmentCardState extends State<AttachmentCard> {
         button: true,
         label: item.name,
         excludeSemantics: true,
+        onTap: preview,
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: preview,

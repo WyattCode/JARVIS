@@ -70,7 +70,9 @@ class AdaptiveLayout {
     } else if (docked) {
       sidebarWidth = (usableWidth * .319).clamp(251, 308).toDouble() * 1.1;
     } else if (fullPageList) {
-      sidebarWidth = usableWidth;
+      // The whole window: the list's own safe area keeps its rows off a cutout,
+      // and no strip of the chat shows beside it.
+      sidebarWidth = width;
     } else if (kind == null) {
       sidebarWidth = math.min(usableWidth * (tallPhone ? .715 : .65), 320);
     } else {

@@ -274,6 +274,11 @@ class VoiceIdentityStage extends StatelessWidget {
                       )!,
                       child: _Dissolve(
                         still: still,
+                        alignment: Alignment.lerp(
+                          Alignment.center,
+                          Alignment.centerLeft,
+                          progress,
+                        )!,
                         child: Text(
                           status,
                           key: ValueKey(status),
@@ -302,6 +307,11 @@ class VoiceIdentityStage extends StatelessWidget {
                         )!,
                         child: _Dissolve(
                           still: still,
+                          alignment: Alignment.lerp(
+                            Alignment.center,
+                            Alignment.centerLeft,
+                            progress,
+                          )!,
                           child: Text(
                             hint,
                             key: ValueKey(hint),
@@ -386,15 +396,27 @@ class _StageSpring extends Curve {
 /// Words that change dissolve over 0.2 s (and only when they really changed:
 /// the page keeps still while its state ticks over).
 class _Dissolve extends StatelessWidget {
-  const _Dissolve({required this.still, required this.child});
+  const _Dissolve({
+    required this.still,
+    required this.child,
+    this.alignment = Alignment.center,
+  });
   final bool still;
   final Widget child;
+
+  /// Where the old and the new words stand while they change places: where the
+  /// words themselves are aligned, so that they do not jump sideways.
+  final AlignmentGeometry alignment;
 
   @override
   Widget build(BuildContext context) => still
       ? child
       : AnimatedSwitcher(
           duration: const Duration(milliseconds: 200),
+          layoutBuilder: (current, previous) => Stack(
+            alignment: alignment,
+            children: [...previous, ?current],
+          ),
           child: child,
         );
 }

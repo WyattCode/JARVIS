@@ -591,6 +591,18 @@ class _JarvisHomeState extends State<JarvisHome> {
 
   final scaffold = GlobalKey<ScaffoldState>();
   final paneBounds = GlobalKey(), composerBounds = GlobalKey();
+
+  /// The call page keeps its state when the hinge bends or flattens (it then
+  /// moves under or out from a sub-screen).
+  final voiceKey = GlobalKey();
+
+  /// Closes the list when it is a drawer; safe to ask twice (a second tap in
+  /// the closing animation must not pop the home page).
+  void closeList() {
+    final state = scaffold.currentState;
+    if (state != null && state.isDrawerOpen) state.closeDrawer();
+  }
+
   void settings() => Navigator.of(context).push(
     MaterialPageRoute<void>(
       builder: (_) => SettingsPage(controller: widget.controller),
@@ -628,6 +640,9 @@ class _JarvisHomeState extends State<JarvisHome> {
         return AlertDialog(
           key: const Key('rename-dialog'),
           backgroundColor: dark ? const Color(0xff121214) : Colors.white,
+          // It scrolls where there is no room for all of it (a short window with
+          // the keyboard up).
+          scrollable: true,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(34),
           ),
@@ -799,20 +814,20 @@ class _JarvisHomeState extends State<JarvisHome> {
                   },
           ),
     onChoose: () {
-      if (drawer) Navigator.pop(context);
+      if (drawer) closeList();
     },
     onNew: () {
       widget.controller.newConversation();
-      if (drawer) Navigator.pop(context);
+      if (drawer) closeList();
     },
     onSettings: () {
-      if (drawer) Navigator.pop(context);
+      if (drawer) closeList();
       settings();
     },
     onRename: renameConversation,
     onDelete: deleteConversation,
     onClose: fullPage
-        ? () => Navigator.pop(context)
+        ? closeList
         : (!drawer && canClose)
         ? () => setState(() => showDocked = false)
         : null,
@@ -1327,11 +1342,13 @@ class _JarvisHomeState extends State<JarvisHome> {
                     ? DisplayFeatureSubScreen(
                         anchorPoint: Offset(size.width, 0),
                         child: VoiceOverlay(
+                          key: voiceKey,
                           controller: widget.controller,
                           open: widget.controller.voice.open,
                         ),
                       )
                     : VoiceOverlay(
+                        key: voiceKey,
                         controller: widget.controller,
                         open: widget.controller.voice.open,
                       ),
@@ -1409,7 +1426,9 @@ class _ChatPanelState extends State<ChatPanel> {
         builder: (context, bounds) {
           final window = MediaQuery.sizeOf(context);
           final tall =
-              window.width < 600 && window.height >= window.width * 1.9;
+              window.width < 600 &&
+              window.height >= window.width * 1.9 &&
+              !FoldProportions.isFold(window.width, window.height);
           final welcomeInset =
               widget.welcomeInset ??
               AdaptiveLayout.tallComposerGap(
@@ -1574,7 +1593,7 @@ class _ChatPanelState extends State<ChatPanel> {
                                               _starterDescriptionLines(
                                                 context,
                                                 starters,
-                                                width - 28,
+                                                width - 36,
                                                 11 + spacious,
                                               );
                                           return Wrap(
@@ -1987,7 +2006,12 @@ class _ComposerState extends State<Composer> {
     final roomWithoutHint =
         widget.heightBudget -
         (62 + widget.bottomGap + attachmentSpace + loadingSpace);
-    final showHint = !compact && roomWithoutHint >= 48 + 26;
+    final hintScale = math.max(
+      1.0,
+      MediaQuery.textScalerOf(context).scale(13) / 13,
+    );
+    final hintRoom = 26.0 * hintScale;
+    final showHint = !compact && roomWithoutHint >= 48 + hintRoom;
     final blockedSpace =
         showHint &&
             (widget.controller.current.draft.trim().isNotEmpty ||
@@ -1997,7 +2021,7 @@ class _ComposerState extends State<Composer> {
                 widget.controller.attachmentsLoading(
                   widget.controller.current.id,
                 ))
-        ? 26.0
+        ? hintRoom
         : 0.0;
     final fieldBudget = compact
         ? 48.0
@@ -2563,7 +2587,7 @@ class _FoldWelcome extends StatelessWidget {
       final detailLines = _starterDescriptionLines(
         context,
         controller.starters,
-        (typeWidth - 10) / 2 - 28,
+        (typeWidth - 10) / 2 - 36,
         detailSize,
       );
       final tile = math.max(
@@ -2829,7 +2853,7 @@ class _AdaptiveWelcome extends StatelessWidget {
         final descriptionLines = _starterDescriptionLines(
           context,
           controller.starters,
-          (width - 10) / 2 - 28,
+          (width - 10) / 2 - 36,
           11,
         );
         final cards = SizedBox(

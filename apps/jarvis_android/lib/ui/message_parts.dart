@@ -162,6 +162,7 @@ class _CopyReplyButtonState extends State<CopyReplyButton> {
 
   Future<void> copy() async {
     await Clipboard.setData(ClipboardData(text: widget.text));
+    if (!mounted) return;
     HapticFeedback.selectionClick().catchError((Object _) {});
     final mine = ++serial;
     setState(() => copied = true);

@@ -152,10 +152,10 @@ void main() {
       expect(side.docked, isTrue);
     });
 
-    test('less the system\'s side insets', () {
+    test('the whole window, whatever the side insets', () {
       expect(
         AdaptiveLayout.forWindow(608, 860, horizontalInsets: 32).sidebarWidth,
-        576,
+        608,
       );
     });
   });

@@ -110,7 +110,12 @@ void main() {
     await t.pump();
     expect(c.canDeleteConversation(victim.id), isFalse);
     final row = find.byKey(ValueKey('conversation-surface-${victim.id}'));
-    await deleteConversationViaMenu(t);
+    // It is told at once, without asking first and then refusing.
+    await openConversationMenu(t);
+    await t.tap(find.text('删除'));
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 400));
+    expect(find.byKey(const Key('confirm-delete')), findsNothing);
     expect(c.conversations, contains(victim));
     expect(row, findsOneWidget);
     expect(find.text('请先结束此会话的任务或通话，再删除会话'), findsOneWidget);

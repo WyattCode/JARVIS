@@ -49,11 +49,13 @@ class _AudioWaveformState extends State<AudioWaveform>
     if (elapsed - last < const Duration(milliseconds: 33)) return;
     last = elapsed;
     final audio = widget.levels.value;
+    final before = motion.level;
     motion.level += (target(audio) - motion.level) * .22;
     if (motion.level < .001) motion.level = 0;
     motion.time = elapsed.inMicroseconds / 1000000;
     motion.playing = audio.playing;
-    motion.changed();
+    // At rest the bars are still dots: nothing to draw again (as on iOS).
+    if (before != 0 || motion.level != 0) motion.changed();
   }
 
   @override
