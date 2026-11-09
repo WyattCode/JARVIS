@@ -32,6 +32,7 @@ final class SettingsAdapter {
       speech: .init(
         engines: speech.map { .init(id: $0.id, name: displayModelName($0.name)) }, engine: engine?.id,
         voices: (engine?.voices ?? []).map { .init(id: $0.id, name: $0.name, description: $0.description) }, voice: voice,
+        effort: s.voiceEffort, serverEffort: store.voiceServerEffortKnown ? store.voiceServerEffort : "",
         missing: engine.map { e in !e.voices.contains { $0.id == voice } } ?? false, previewId: preview?.previewVoice,
         previewLoading: preview?.previewLoading ?? false,
         previewPlaying: (preview?.previewing ?? false) && !(preview?.previewLoading ?? false),
@@ -70,6 +71,10 @@ final class SettingsAdapter {
     case "theme": store.setTheme(v as? String ?? "")
     case "model": store.setModel(v as? String ?? "")
     case "effort": store.setEffort(v as? String ?? "")
+    case "voiceEffort":
+      let value = v as? String ?? ""
+      guard value.isEmpty || ChatSettings.efforts.contains(value) else { return ["ok": false] }
+      store.changeSettings { $0.voiceEffort = value }
     case "tools": store.changeSettings { $0.tools = v as? Bool ?? true }
     case "fontSize":
       guard let size = (v as? NSNumber)?.doubleValue, [12.0, 14, 16, 18, 20, 22, 24].contains(size) else { return ["ok": false] }
@@ -416,7 +421,8 @@ final class WorksSheet {
       tasks: tasks.map {
         .init(
           id: $0.id, kind: $0.kind, prompt: $0.prompt, status: $0.status, progress: $0.progress, error: $0.error, pending: $0.pending,
-          urls: $0.status == "completed" ? $0.urls : [], highlight: false)
+          urls: $0.status == "completed" ? $0.urls : [], highlight: false, phase: $0.phase, track: $0.track,
+          plan: store.mediaTimings.plan(kind: $0.kind, args: $0.args))
       })
   }
 

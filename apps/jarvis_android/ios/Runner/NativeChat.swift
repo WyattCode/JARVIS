@@ -605,7 +605,7 @@ final class ChatViewController: UIViewController {
     wasGenerating = generating ? c.id : nil
     // Regenerating is refused while a call is on in this conversation, so its buttons are not offered then.
     let inCall = voice.active && voice.conversationId == c.id
-    let rows = MessageRows.rows(c, generating: generating, canRegenerate: !inCall)
+    let rows = MessageRows.rows(c, generating: generating, canRegenerate: !inCall, timings: store.mediaTimings)
     // A different conversation is drawn at once, whatever the throttle says.
     pushRows(rows, force: force || switched)
     if welcome.view.isHidden != !c.messages.isEmpty {

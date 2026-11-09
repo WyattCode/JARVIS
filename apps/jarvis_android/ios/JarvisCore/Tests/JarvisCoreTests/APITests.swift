@@ -245,7 +245,7 @@ final class APITests: XCTestCase {
     var job: String?
     var progress: [Double] = []
     let urls = try await api.generate(
-      requestId: "g", kind: "video", args: ["prompt": .string("海"), "seconds": .number(4)], onJob: { job = $0 }, onProgress: { progress.append($0) })
+      requestId: "g", kind: "video", args: ["prompt": .string("海"), "seconds": .number(4)], onJob: { job = $0 }, onProgress: { progress.append($0.progress) })
     XCTAssertEqual(job, "v 1")
     XCTAssertEqual(urls, ["/v1/videos/v%201/content"])
     XCTAssertEqual(progress, [0, 30, 60])
@@ -323,5 +323,114 @@ final class APITests: XCTestCase {
     XCTAssertEqual(out, ["a\nb"])
     out = p.finish()
     XCTAssertEqual(out, ["c"])
+  }
+}
+
+// MARK: Pictures as jobs
+
+extension APITests {
+  func testAPictureIsAskedForAsAJobAndFollowedWithItsProgress() async throws {
+    var polls = 0
+    StubProtocol.handler = { request, _ in
+      if request.httpMethod == "POST" { return .init(status: 202, chunks: [Data(#"{"id":"img_1","status":"queued","phase":"queued","progress":0}"#.utf8)]) }
+      polls += 1
+      if polls < 3 {
+        return .init(chunks: [Data(#"{"id":"img_1","status":"in_progress","phase":"generating","progress":\#(polls * 25)}"#.utf8)])
+      }
+      return .init(chunks: [Data(#"{"id":"img_1","status":"completed","phase":"completed","progress":100,"urls":["/v1/files/img_1/0.png"]}"#.utf8)])
+    }
+    let api = try api()
+    api.pollInterval = 0.01
+    var job: String?
+    var reports: [MediaReport] = []
+    let urls = try await api.generate(
+      requestId: "g", kind: "image", args: ["prompt": .string("猫"), "size": .string("1024x1024")], onJob: { job = $0 },
+      onProgress: { reports.append($0) })
+    XCTAssertEqual(job, "img_1")
+    XCTAssertEqual(urls, ["/v1/files/img_1/0.png"])
+    XCTAssertEqual(reports.map(\.progress), [0, 25, 50])
+    XCTAssertEqual(reports.map(\.phase), ["queued", "generating", "generating"])
+    let body = try JSONDecoder().decode(JSONValue.self, from: StubProtocol.seen[0].body)
+    XCTAssertEqual(body["wait_s"], .number(0))
+    XCTAssertEqual(body["response_format"], .string("url"))
+    XCTAssertEqual(StubProtocol.seen[1].request.url?.path, "/v1/jobs/img_1")
+  }
+
+  func testAServiceThatDoesNotKnowTheJobOptionIsAskedTheOldWay() async throws {
+    StubProtocol.handler = { _, body in
+      if String(decoding: body, as: UTF8.self).contains("wait_s") { return .init(status: 400, chunks: [Data("{}".utf8)]) }
+      return .init(chunks: [Data(#"{"data":[{"url":"/v1/files/1.png"}]}"#.utf8)])
+    }
+    let urls = try await api().generate(requestId: "g", kind: "image", args: ["prompt": .string("猫")])
+    XCTAssertEqual(urls, ["/v1/files/1.png"])
+    XCTAssertEqual(StubProtocol.seen.count, 2)
+  }
+
+  func testAPictureTheServiceHadReadyAtOnceIsReturnedWithoutPolling() async throws {
+    StubProtocol.handler = { _, _ in .init(chunks: [Data(#"{"created":1,"id":"img_2","data":[{"url":"/v1/files/img_2/0.png"}]}"#.utf8)]) }
+    let urls = try await api().generate(requestId: "g", kind: "image", args: ["prompt": .string("猫")])
+    XCTAssertEqual(urls, ["/v1/files/img_2/0.png"])
+    XCTAssertEqual(StubProtocol.seen.count, 1)
+  }
+
+  func testAFailedPictureJobSaysSoAndABriefDropOfTheConnectionDoesNotEndIt() async throws {
+    var polls = 0
+    StubProtocol.handler = { request, _ in
+      if request.httpMethod == "POST" { return .init(status: 202, chunks: [Data(#"{"id":"img_3","status":"queued"}"#.utf8)]) }
+      polls += 1
+      if polls == 1 { return .init(status: 502) }
+      return .init(chunks: [Data(#"{"id":"img_3","status":"failed"}"#.utf8)])
+    }
+    let api = try api()
+    api.pollInterval = 0.01
+    do { _ = try await api.generate(requestId: "g", kind: "image", args: ["prompt": .string("x")]); XCTFail() } catch {
+      XCTAssertEqual((error as? JarvisException)?.message, "图片生成失败，请检查原任务")
+    }
+    XCTAssertEqual(polls, 2)
+  }
+
+  func testAJobThatReportsNothingForTooLongIsGivenUpAsStuck() async throws {
+    StubProtocol.handler = { request, _ in
+      if request.httpMethod == "POST" { return .init(status: 202, chunks: [Data(#"{"id":"img_9","status":"queued"}"#.utf8)]) }
+      return .init(chunks: [Data(#"{"id":"img_9","status":"in_progress","phase":"generating","progress":50}"#.utf8)])
+    }
+    let api = try api()
+    api.pollInterval = 0.01
+    api.quietLimit = 0.1
+    do { _ = try await api.generate(requestId: "g", kind: "image", args: ["prompt": .string("x")]); XCTFail() } catch {
+      let e = error as? JarvisException
+      XCTAssertEqual(e?.stalled, true)
+      XCTAssertTrue(e?.message.contains("没有新进展") == true)
+    }
+  }
+
+  func testAJobWaitingForItsTurnIsNotGivenUpOnItsQuiet() async throws {
+    var polls = 0
+    StubProtocol.handler = { request, _ in
+      if request.httpMethod == "POST" { return .init(status: 202, chunks: [Data(#"{"id":"img_8","status":"queued","phase":"queued"}"#.utf8)]) }
+      polls += 1
+      if polls < 30 { return .init(chunks: [Data(#"{"id":"img_8","status":"queued","phase":"queued","progress":0}"#.utf8)]) }
+      return .init(chunks: [Data(#"{"id":"img_8","status":"completed","urls":["/v1/files/img_8/0.png"]}"#.utf8)])
+    }
+    let api = try api()
+    api.pollInterval = 0.01
+    api.quietLimit = 0.05
+    let urls = try await api.generate(requestId: "g", kind: "image", args: ["prompt": .string("x")])
+    XCTAssertEqual(urls, ["/v1/files/img_8/0.png"])
+  }
+
+  func testAJobTheServiceCallsQueuedWithoutAStageIsNotGivenUpWhileItWaits() async throws {
+    var polls = 0
+    StubProtocol.handler = { request, _ in
+      if request.httpMethod == "POST" { return .init(status: 202, chunks: [Data(#"{"id":"img_7","status":"queued"}"#.utf8)]) }
+      polls += 1
+      if polls < 30 { return .init(chunks: [Data(#"{"id":"img_7","status":"queued","progress":0}"#.utf8)]) }
+      return .init(chunks: [Data(#"{"id":"img_7","status":"completed","urls":["/v1/files/img_7/0.png"]}"#.utf8)])
+    }
+    let api = try api()
+    api.pollInterval = 0.01
+    api.quietLimit = 0.05
+    let urls = try await api.generate(requestId: "g", kind: "image", args: ["prompt": .string("x")])
+    XCTAssertEqual(urls, ["/v1/files/img_7/0.png"])
   }
 }

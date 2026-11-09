@@ -39,7 +39,15 @@ import UIKit
     func login(_ username: String, _ password: String) async throws { cookie = "preview" }
     func logout() async throws { cookie = nil }
     func models() async throws -> [ModelInfo] {
-      [ModelInfo("preview", "Preview", metadata: ["jarvis": .object(["image_input": .bool(true)])])]
+      var found = [ModelInfo("preview", "Preview", metadata: ["jarvis": .object(["image_input": .bool(true)])])]
+      // JARVIS_PREVIEW_VOICES=1: a speech engine with voices, to see the voice settings as a real server fills them.
+      if ProcessInfo.processInfo.environment["JARVIS_PREVIEW_VOICES"] == "1" {
+        let voices = [("amy", "Amy", "温暖、清晰"), ("ben", "Ben", "沉稳、低沉"), ("cora", "Cora", "轻快、自然")]
+        found.append(
+          ModelInfo(
+            "tts-demo", "Demo Voice", kind: "speech", voices: voices.map { VoiceInfo($0.0, $0.1, $0.2) }, defaultVoice: "amy"))
+      }
+      return found
     }
     func modelSkill() async throws -> [String: JSONValue] { ["enabled": .bool(false), "text": .string("")] }
     func toolsStatus() async throws -> [String: JSONValue] {
@@ -79,7 +87,7 @@ import UIKit
     func cancel(_ requestId: String) {}
     func generate(
       requestId: String, kind: String, args: [String: JSONValue], resumeJobId: String?, onJob: ((String) -> Void)?,
-      onProgress: ((Double) -> Void)?
+      onProgress: ((MediaReport) -> Void)?
     ) async throws -> [String] { [] }
     func jobStatus(_ id: String) async throws -> [String: JSONValue] { [:] }
     func mediaURL(_ path: String) throws -> URL { URL(string: path, relativeTo: endpoint)!.absoluteURL }
@@ -210,7 +218,7 @@ import UIKit
               if let i = c.tasks.firstIndex(where: { $0.status != "completed" }) {
                 c.tasks[i].status = "completed"
                 c.tasks[i].urls = ["/v1/files/sunset.png"]
-                c.tasks[i].progress = 1
+                c.tasks[i].progress = 100
               }
             }
           }
@@ -261,13 +269,30 @@ import UIKit
       for (item, bytes) in items.prefix(count) { try? await store.addAttachment(store.current.id, item, bytes: bytes) }
     }
 
+    /// A task as the service would be reporting it `ago` seconds into the run: the first step done `step` seconds ago, the latest report `last` seconds ago.
+    private static func running(_ task: MediaTask, ago: Double, step: Double?, last: Double?) -> MediaTask {
+      var t = task
+      let now = Date().timeIntervalSince1970
+      var track = MediaTrack(startedAt: now - ago)
+      track.note(MediaReport(progress: 0, phase: "queued"), at: now - ago)
+      track.note(MediaReport(progress: 0, phase: "generating"), at: now - ago + 0.5)
+      if let step, let last {
+        track.note(MediaReport(progress: 12, phase: "generating"), at: now - step)
+        track.note(MediaReport(progress: 25, phase: "generating"), at: now - last - 1)
+        track.note(MediaReport(progress: 37, phase: "generating"), at: now - last)
+        t.phase = "generating"
+      }
+      t.track = track
+      return t
+    }
+
     /// A conversation with a picture card and a picture in a reply, for looking at the viewer.
     private static func seed(_ store: JarvisStore) {
       let id = store.current.id
       store.update(id) {
         // JARVIS_DEMO_VIDEO also puts a finished video in, named with another host and scheme than the service's (as a real one may be).
         if ProcessInfo.processInfo.environment["JARVIS_DEMO_VIDEO"] != nil {
-          $0.tasks = [MediaTask(id: "tv", kind: "video", prompt: "草泥马吃草", status: "completed", urls: ["http://internal.host:9000/v1/files/clip.mp4"], progress: 1)]
+          $0.tasks = [MediaTask(id: "tv", kind: "video", prompt: "草泥马吃草", status: "completed", urls: ["http://internal.host:9000/v1/files/clip.mp4"], progress: 100)]
           $0.messages = [ChatMessage("user", "做个视频", id: "v0"), ChatMessage("assistant", "", taskId: "tv", id: "v1")]
           $0.title = "视频"
           $0.named = true
@@ -276,8 +301,16 @@ import UIKit
         $0.title = ProcessInfo.processInfo.environment["JARVIS_LONG_TITLE"] == "1" ? "帮我审查一个技术方案，请先问目标、约束和当前实现，再给出审查意见" : "封面设计"
         $0.named = true
         $0.tasks = [
-          MediaTask(id: "t1", kind: "image", prompt: "一只猫的水彩画", status: "completed", urls: ["/v1/files/cat.png"], progress: 1),
-          MediaTask(id: "t2", kind: "image", prompt: "海边日落", status: "in_progress", progress: 0.4),
+          MediaTask(id: "t1", kind: "image", prompt: "一只猫的水彩画", status: "completed", urls: ["/v1/files/cat.png"], progress: 100),
+          Self.running(MediaTask(id: "t2", kind: "image", prompt: "海边日落", status: "in_progress", progress: 37), ago: 9, step: 4, last: 1.1),
+          Self.running(
+            MediaTask(id: "t3", kind: "video", prompt: "一只猫在草地上追蝴蝶", args: ["seconds": .number(3)], status: "in_progress"), ago: 9, step: nil, last: nil),
+          Self.running(MediaTask(id: "t4", kind: "image", prompt: "山间小路", status: "in_progress", progress: 51), ago: 200, step: 195, last: 130),
+          {
+            var t = Self.running(MediaTask(id: "t5", kind: "image", prompt: "雪夜的城市", status: "interrupted", progress: 51), ago: 41, step: 30, last: 20)
+            t.error = "应用退出时任务没做完"
+            return t
+          }(),
         ]
         $0.messages = [
           ChatMessage("assistant", "好的。这周有三件事：\n\n- 周一交方案\n- 周三评审\n- 周五发版\n\n需要我按优先级排一下吗？", id: "m0"),
@@ -289,6 +322,9 @@ import UIKit
           ChatMessage("user", "好的，另外画一张封面", id: "m1"),
           ChatMessage("assistant", "", taskId: "t1", id: "m2"),
           ChatMessage("assistant", "", taskId: "t2", id: "m3"),
+          ChatMessage("assistant", "", taskId: "t3", id: "m3b"),
+          ChatMessage("assistant", "", taskId: "t4", id: "m3c"),
+          ChatMessage("assistant", "", taskId: "t5", id: "m3d"),
           ChatMessage("assistant", "这是封面预览：\n\n![封面](/v1/files/cat.png)\n\n如果满意我就用它。", id: "m4"),
         ]
       }

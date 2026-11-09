@@ -22,7 +22,8 @@ public enum MessageRows {
   }
 
   public static func rows(
-    _ c: Conversation, generating: Bool, canContinue: Bool = true, canCancelTask: Bool = true, canRegenerate: Bool = true
+    _ c: Conversation, generating: Bool, canContinue: Bool = true, canCancelTask: Bool = true, canRegenerate: Bool = true,
+    timings: MediaTimings = .prior
   ) -> [MessageRow] {
     let last = lastReply(c)
     var rows: [MessageRow] = []
@@ -52,6 +53,10 @@ public enum MessageRows {
       if let task {
         hasher.combine(task.status)
         hasher.combine(task.progress)
+        hasher.combine(task.phase)
+        hasher.combine(timings.plan(kind: task.kind, args: task.args))
+        hasher.combine(task.track?.lastAt)
+        hasher.combine(task.track?.tailAt)
         hasher.combine(task.urls.count)
         hasher.combine(task.error)
         hasher.combine(task.kind)
@@ -86,6 +91,10 @@ public enum MessageRows {
           "error": task.error.map { .string($0) } ?? .null,
           "pending": .bool(task.pending),
           "canCancel": .bool(canCancelTask),
+          "phase": .string(task.phase),
+          "track": task.track.flatMap { try? JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode($0)) } ?? .null,
+          "plan": (try? JSONDecoder().decode(
+            JSONValue.self, from: JSONEncoder().encode(timings.plan(kind: task.kind, args: task.args)))) ?? .null,
         ])
       }
       rows.append(MessageRow(id: m.id, revision: hasher.finalize(), json: .object(object)))

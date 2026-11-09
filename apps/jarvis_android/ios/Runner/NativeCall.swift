@@ -636,8 +636,13 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
     worksLabel.text = "作品 · \(count)"
     works.accessibilityLabel = "作品，\(count) 个"
 
-    let talk = voice.ready ? (ptt ? (voice.held ? "松开发送" : "按住说话") : (muted ? "已静音" : "正在聆听")) : (voice.error == nil ? "等待连接" : "等待恢复")
-    controls.apply(["ptt": ptt, "ready": voice.ready, "held": voice.held, "muted": muted, "label": talk, "short": view.bounds.height < 520, "circular": strip])
+    var stoppable = voice.canStopSpeech
+    var callReady = voice.ready
+    #if DEBUG
+      if Self.demoMode == "read" { stoppable = true; callReady = true }
+    #endif
+    let talk = callReady ? (stoppable ? (ptt ? "点按停止 · 按住插话" : "点按停止") : ptt ? (voice.held ? "松开发送" : "按住说话") : (muted ? "已静音" : "正在聆听")) : (voice.error == nil ? "等待连接" : "等待恢复")
+    controls.apply(["ptt": ptt, "ready": callReady, "held": voice.held, "muted": muted, "label": talk, "stoppable": stoppable, "short": view.bounds.height < 520, "circular": strip])
     works.isHidden = count == 0 || strip
     updateStripItems(tasks: count)
     if strip, !conversing, !voice.lastYou.isEmpty || !voice.lastBot.isEmpty { setStage(conversing: true, animated: true) }
@@ -668,6 +673,8 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
     followsVoice = progress?.live == true || progress?.cut == true
     botView.show(text, size: size, progress: progress)
     if progress != nil { voice.traceReading(raw: botView.estimated, shown: botView.shown, characters: botView.characterCount) }
+    // The ring of the stop key fills as the lit edge goes through the words.
+    if let shown = botView.shown, botView.characterCount > 0 { controls.setProgress(shown / Double(botView.characterCount)) }
     if progress?.live == true { startReading() } else { stopReading() }
   }
 
@@ -748,6 +755,11 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
         voice.release()
       }
     case "cancel": if holding { holding = false; voice.cancelHold() }
+    case "stop":
+      // The talk button, as a stop key while the reply is being said: the voice stops where it is and the words stay, lit as far
+      // as it got.
+      UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+      Task { await voice.interrupt() }
     case "mute":
       UIImpactFeedbackGenerator(style: .medium).impactOccurred()
       voice.toggleMute()

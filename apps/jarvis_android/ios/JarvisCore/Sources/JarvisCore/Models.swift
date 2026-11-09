@@ -53,6 +53,9 @@ public struct MediaTask: Codable, Equatable, Sendable {
   public var urls: [String]
   public var error: String?
   public var progress: Double
+  /// What the service says it is doing (queued, generating ...), and when each part of this run was reported.
+  public var phase: String = ""
+  public var track: MediaTrack?
 
   public init(
     id: String, kind: String, prompt: String, args: [String: JSONValue] = [:], callId: String? = nil, jobId: String? = nil,
@@ -88,7 +91,7 @@ public struct MediaTask: Codable, Equatable, Sendable {
     return r
   }
 
-  enum Keys: String, CodingKey { case id, kind, prompt, args, callId, jobId, status, source, urls, error, progress }
+  enum Keys: String, CodingKey { case id, kind, prompt, args, callId, jobId, status, source, urls, error, progress, phase, track }
 
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: Keys.self)
@@ -103,6 +106,8 @@ public struct MediaTask: Codable, Equatable, Sendable {
     urls = stringList(try? c.decodeIfPresent(JSONValue.self, forKey: .urls))
     error = try c.decodeIfPresent(String.self, forKey: .error)
     progress = (try? c.decodeIfPresent(Double.self, forKey: .progress)) ?? 0
+    phase = (try? c.decodeIfPresent(String.self, forKey: .phase)) ?? ""
+    track = try? c.decodeIfPresent(MediaTrack.self, forKey: .track)
     settleKind()
   }
 
@@ -112,6 +117,9 @@ public struct MediaTask: Codable, Equatable, Sendable {
     try c.encode(args, forKey: .args); try c.encode(callId, forKey: .callId); try c.encode(jobId, forKey: .jobId)
     try c.encode(status, forKey: .status); try c.encode(source, forKey: .source); try c.encode(urls, forKey: .urls)
     try c.encode(error, forKey: .error); try c.encode(progress, forKey: .progress)
+    // Only when there is something to say, so a task that never ran here is stored as before.
+    if !phase.isEmpty { try c.encode(phase, forKey: .phase) }
+    if let track { try c.encode(track, forKey: .track) }
   }
 }
 

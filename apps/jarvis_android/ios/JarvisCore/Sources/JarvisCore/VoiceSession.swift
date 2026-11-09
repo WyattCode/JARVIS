@@ -90,6 +90,8 @@ public final class VoiceSession: ObservableObject, VoiceHost {
   private var replyAudioBytes = 0
   /// Finds the rests in this reply's sound, for the trace (see `SoundRests`).
   private var replyRests = SoundRests(rate: 24000)
+  /// The rests found so far in this reply's sound: the call page sets the words right at the end of each sentence by them.
+  private var replyRestList: [SoundRests.Rest] = []
   private var replyPlaying = false
   private var replyAudioDone = false
   /// The sound said its end (an end marker) and no more sound has come since, and the reply itself has ended.
@@ -97,6 +99,8 @@ public final class VoiceSession: ObservableObject, VoiceHost {
   private var replyEnded = false
   /// The pace this reply's sound turned out to have, taken on by the next reply once this one is over.
   private var replyMeasuredPace: Double?
+  /// How many characters the reply that measured it had: a short reply says little about the voice's speed.
+  private var replyMeasuredChars = 0
   private var replyCutAt: Double?
   /// Seconds one spoken character took in the last reply of this call: the next reply is laid out with it until its own audio
   /// is all here.
@@ -755,6 +759,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
   private func resetReplyAudio() {
     replyAudioBytes = 0
     replyRests = SoundRests(rate: playbackRate)
+    replyRestList = []
     replyPlaying = false
     replyAudioDone = false
     replyMarkerSeen = false
@@ -782,22 +787,37 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     let words = SpokenText(lastBot)
     let measured = words.pace(forTotal: seconds)
     replyMeasuredPace = measured
+    replyMeasuredChars = words.clusters.count
     trace(String(format: "all sound taken as arrived: %.2fs for %d chars, measured pace %.3f (carried pace %.3f)", seconds, words.clusters.count, measured, speechPace))
+    let aligned = words.alignedPauses(pace: measured, rests: replyRestList)
+    trace("sentence ends set against rests of the sound: \(aligned.matched) of \(aligned.of)")
+    // The words themselves stay out of the trace; their make-up does not: what the voice reads slowly or fast is mostly letters,
+    // digits and marks.
+    let plain = words.plain
+    let latin = plain.unicodeScalars.filter { ($0.value >= 0x41 && $0.value <= 0x5A) || ($0.value >= 0x61 && $0.value <= 0x7A) }.count
+    let digits = plain.unicodeScalars.filter { $0.value >= 0x30 && $0.value <= 0x39 }.count
+    let lines = plain.filter { $0 == "\n" }.count
+    trace("text make-up: latin letters \(latin), digits \(digits), lines \(lines), of \(words.clusters.count) characters")
   }
 
   /// What the last reply showed of this voice's speed is the starting point for the next one, and for the next call.
   private func adoptMeasuredPace() {
     guard let measured = replyMeasuredPace else { return }
-    speechPace = speechPaceKnown ? speechPace * 0.4 + measured * 0.6 : measured
-    speechPaceKnown = true
     replyMeasuredPace = nil
+    // A short reply says little about the voice's speed: its lead-in and its rests weigh more than its few words (a 14-character
+    // reply measured 0.145 s a character, the voice's own 0.188, and the next call's highlight ran 12% fast). Under 30 characters
+    // it is not taken at all; above that it counts as much as its length says, in full from 120 characters.
+    guard replyMeasuredChars >= 30 else { return }
+    let weight = min(0.6, Double(replyMeasuredChars) / 200)
+    speechPace = speechPaceKnown ? speechPace * (1 - weight) + measured * weight : measured
+    speechPaceKnown = true
     paceDefaults.set(speechPace, forKey: paceKey)
   }
 
   /// Seconds one spoken character is taken to last until the sound of the reply says otherwise.
   public var carriedSpeechPace: Double { speechPace }
 
-  private var paceKey: String { "speechPace.\(store.settings.speechModel).\(voice)" }
+  private var paceKey: String { "speechPace.v2.\(store.settings.speechModel).\(voice)" }
 
   private func loadSpeechPace() {
     let saved = paceDefaults.double(forKey: paceKey)
@@ -819,7 +839,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
   /// Where the voice is in the reply the page shows, or nil when there is nothing to follow (no sound yet, a voice preview).
   public var speechProgress: SpeechProgress? {
     guard !previewing, replyAudioBytes > 0, !lastBot.isEmpty else { return nil }
-    if let cut = replyCutAt { return SpeechProgress(played: cut, total: nil, pace: speechPace, live: false, cut: true) }
+    if let cut = replyCutAt { return SpeechProgress(played: cut, total: nil, pace: speechPace, live: false, cut: true, rests: replyRestList) }
     guard replyPlaying else { return nil }
     let sounding = speaking || queuedBytes > 0
     // A reply the server failed stops being said part way: the words keep the mark where the sound ran out, so it shows how far
@@ -831,8 +851,12 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     let waiting = response != nil && !replyEnded && !replyFailed
     let live = sounding || waiting
     let total = replyAudioDone ? Double(replyAudioBytes) / 2 / Double(max(playbackRate, 1)) : nil
-    return SpeechProgress(played: replyPlayedSeconds, total: total, pace: speechPace, live: live, cut: false)
+    return SpeechProgress(played: replyPlayedSeconds, total: total, pace: speechPace, live: live, cut: false, rests: replyRestList)
   }
+
+  /// JARVIS is saying a reply (or is still making it while the player waits for more sound) and nobody is holding the talk
+  /// button: the button then offers to stop the reply with a tap, and keeps its other use, a hold to talk over it.
+  public var canStopSpeech: Bool { ready && !held && speechProgress?.live == true }
 
   private func input(_ bytes: Data) {
     if !wanted { return }
@@ -1145,7 +1169,10 @@ public final class VoiceSession: ObservableObject, VoiceHost {
       receivedPcmBytes += data.count
       replyAudioBytes += data.count
       if replyAudioBytes == data.count { traceModelRests() }
-      for rest in replyRests.add(data) { trace(String(format: "rest in the sound at %.2fs for %.2fs", rest.at, rest.length)) }
+      for rest in replyRests.add(data) {
+        replyRestList.append(rest)
+        trace(String(format: "rest in the sound at %.2fs for %.2fs", rest.at, rest.length))
+      }
       if replyAudioBytes > data.count, let last = lastAudioAt, now().timeIntervalSince(last) >= 2 {
         trace(String(format: "sound came again after %.1fs without any (the player holds %.2fs)", now().timeIntervalSince(last), Double(bufferedFrames) / Double(max(playbackRate, 1))))
       }

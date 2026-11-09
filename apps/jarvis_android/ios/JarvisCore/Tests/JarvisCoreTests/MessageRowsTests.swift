@@ -79,4 +79,21 @@ final class MessageRowsTests: XCTestCase {
     c.messages[5].hidden = true
     XCTAssertEqual(MessageRows.lastReply(c), "gone")
   }
+
+  func testARunningTaskCarriesItsTimelineAndPlanAndRedrawsWhenAReportComes() {
+    var c = conversation()
+    let plain = MessageRows.rows(c, generating: false)
+    c.tasks[0].phase = "generating"
+    c.tasks[0].track = MediaTrack(startedAt: 5)
+    c.tasks[0].track?.note(MediaReport(progress: 12, phase: "generating"), at: 9)
+    let rows = MessageRows.rows(c, generating: false)
+    let task = rows[1].json["task"]
+    XCTAssertEqual(task?["phase"]?.string, "generating")
+    XCTAssertEqual(task?["track"]?["startedAt"]?.double, 5)
+    XCTAssertEqual(task?["track"]?["stepAt"]?.double, 9)
+    XCTAssertGreaterThan(task?["plan"]?["prep"]?.double ?? 0, 0)
+    XCTAssertNotEqual(rows[1].revision, plain[1].revision)
+    c.tasks[0].track?.note(MediaReport(progress: 25, phase: "generating"), at: 12)
+    XCTAssertNotEqual(MessageRows.rows(c, generating: false)[1].revision, rows[1].revision, "each new report redraws the card")
+  }
 }

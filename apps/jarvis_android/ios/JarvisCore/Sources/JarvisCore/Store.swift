@@ -76,6 +76,12 @@ public final class JarvisStore: ObservableObject {
 
   private var active: [String: (requestId: String, messageId: String)] = [:]
   private var mediaActive: [String: String] = [:]
+  /// How long pictures and videos took on this phone, for the time a new one is said to need.
+  public private(set) var mediaTimings = MediaTimings.prior
+  public var timingDefaults: UserDefaults = .standard
+  private static let timingKey = "mediaTimings.v1"
+  /// Unix seconds (a test brings its own).
+  public var clock: () -> Double = { Date().timeIntervalSince1970 }
   private var attachmentLoads: [String: Int] = [:]
   private var serial = 0
   private var catalogEpoch = 0
@@ -165,6 +171,9 @@ public final class JarvisStore: ObservableObject {
   public func initialize() async {
     // Exports, backups and downloads staged before a kill sit in the temp folders as plain text.
     LocalData.clearStaleCachedMedia()
+    if let data = timingDefaults.data(forKey: Self.timingKey), let seen = try? JSONDecoder().decode(MediaTimings.self, from: data) {
+      mediaTimings = seen
+    }
     var loaded = false
     switch Persistence.load(vault, server: api.endpoint.jarvisOrigin) {
     case .empty: break
@@ -203,12 +212,12 @@ public final class JarvisStore: ObservableObject {
       for task in owner.tasks where task.pending {
         if authenticated, task.source == "voice", task.jobId != nil {
           pollVoiceTask(owner.id, task.id)
-        } else if authenticated, task.kind == "video", task.jobId != nil {
+        } else if authenticated, task.jobId != nil {
           runMedia(owner.id, task.id, resume: true)
         } else {
           updateTask(owner.id, task.id) {
             $0.status = "interrupted"
-            $0.error = "应用上次退出时任务未完成，请检查或重试原任务"
+            $0.error = "应用退出时任务没做完"
           }
         }
       }
@@ -227,6 +236,7 @@ public final class JarvisStore: ObservableObject {
     do {
       let found = try await api.models()
       if run != catalogEpoch || disposed { return }
+      let voiceBefore = voiceConfigSignature
       models = found
       connectionError = nil
       let chats = models.filter { $0.kind == "chat" }
@@ -236,6 +246,8 @@ public final class JarvisStore: ObservableObject {
         settings.speechModel = speech.id
       }
       applyVoiceDefaults()
+      // The server's default for calls moved while a call is up: the call follows it (after the reply being spoken, if any).
+      if voice?.active == true, voiceConfigSignature != voiceBefore { voice?.updateSettings() }
       do {
         let skill = try await api.modelSkill()
         if run != catalogEpoch || disposed { return }
@@ -499,12 +511,68 @@ public final class JarvisStore: ObservableObject {
     scheduleSave(draftOnly: true)
   }
 
+  /// The chat's thinking strength. A call has its own (`voiceEffort`), so this never touches a call.
   public func setEffort(_ value: String) {
-    guard ["none", "low", "medium", "high"].contains(value), value != effort else { return }
+    guard ChatSettings.efforts.contains(value), value != effort else { return }
     effort = value
-    voice?.cancelHold()
-    voice?.updateSettings()
     scheduleSave()
+  }
+
+  // MARK: The voice's thinking strength
+
+  private var chatModelMetadata: JSONValue {
+    JSONValue.object(models.first { $0.id == model && $0.kind == "chat" }?.metadata ?? [:])["jarvis"] ?? .object([:])
+  }
+
+  /// What the server says a call thinks with when nobody chose: `jarvis.voice_defaults.reasoning_effort` of the chat model.
+  /// A server without the field, or with a value this app does not know, gets "low".
+  /// The catalog has the chat model, so its voice defaults (or their absence) are the server's word and not a guess.
+  public var voiceServerEffortKnown: Bool { models.contains { $0.id == model && $0.kind == "chat" } }
+
+  /// What a call set up now would be asked for (strength and model); a change in it because the catalog moved (the server's
+  /// default strength) reaches a live call. The voice cannot change that way: the voice defaults are not taken during a call.
+  private var voiceConfigSignature: String { "\(voiceEffort)|\(voiceModel(for: voiceEffort) ?? "")" }
+
+  public var voiceServerEffort: String {
+    let raw = chatModelMetadata["voice_defaults"]?["reasoning_effort"]?.string ?? ""
+    return ChatSettings.efforts.contains(raw) ? raw : "low"
+  }
+
+  /// The strength a call is set up with: the user's own pick, otherwise the server's default.
+  public var voiceEffort: String {
+    ChatSettings.efforts.contains(settings.voiceEffort) ? settings.voiceEffort : voiceServerEffort
+  }
+
+  /// The server lists voice models per thinking strength at all (an older one does not).
+  public var voiceModelsListed: Bool { chatModelMetadata["voice_effort_models"]?.object?.isEmpty == false }
+
+  /// The model the server names for `effort` (`jarvis.voice_effort_models`); nil when it names none.
+  public func voiceModel(for effort: String) -> String? {
+    let id = chatModelMetadata["voice_effort_models"]?[effort]?.string ?? ""
+    return id.isEmpty ? nil : id
+  }
+
+  /// Takes the model list again before a call is set up or set up again, so the server's defaults and model names are the
+  /// current ones. A failure keeps the list already known (the call will say if the server is out of reach).
+  public func refreshModelCatalog() async {
+    guard authenticated, !disposed else { return }
+    let run = catalogEpoch
+    do {
+      // Not the 30 s a plain request may take: a call that cannot reach the server should fail on its own, not wait here first.
+      let api = self.api
+      let found = try await withTimeout(5) { try await api.models() }
+      if run != catalogEpoch || disposed { return }
+      let chats = found.filter { $0.kind == "chat" }
+      guard !chats.isEmpty else { return }
+      models = found
+      if !chats.contains(where: { $0.id == model }) {
+        model = chats[0].id
+        scheduleSave()
+      }
+      applyVoiceDefaults()
+    } catch let e as JarvisException {
+      if e.unauthorized, run == catalogEpoch, !disposed { expireSession() }
+    } catch {}
   }
 
   public func setTheme(_ value: String) {
@@ -914,7 +982,10 @@ public final class JarvisStore: ObservableObject {
   public func retryMedia(_ ownerId: String, _ taskId: String) async {
     guard let task = task(ownerId, taskId), mediaActive[taskId] == nil else { return }
     if task.source == "voice", task.jobId != nil, task.status != "failed" {
-      updateTask(ownerId, taskId) { $0.status = "in_progress" }
+      updateTask(ownerId, taskId) {
+        $0.status = "in_progress"
+        $0.error = nil
+      }
       await pollVoiceTaskNow(ownerId, taskId)
       return
     }
@@ -923,7 +994,7 @@ public final class JarvisStore: ObservableObject {
       $0.error = nil
       $0.status = "queued"
     }
-    await runMediaNow(ownerId, taskId, resume: task.kind == "video" && task.jobId != nil)
+    await runMediaNow(ownerId, taskId, resume: task.jobId != nil)
   }
 
   /// Stops a running image or video task: the service call is cancelled and the card says so (and can be retried), which
@@ -961,7 +1032,16 @@ public final class JarvisStore: ObservableObject {
     if mediaActive[taskId] != nil { return }
     let request = "media_\(newId())"
     mediaActive[taskId] = request
-    updateTask(ownerId, taskId) { $0.status = "in_progress" }
+    let began = clock()
+    updateTask(ownerId, taskId) {
+      $0.status = "in_progress"
+      // A job that is followed again after the app was away keeps its timeline; a new run starts one.
+      if !(resume && $0.track != nil) {
+        $0.track = MediaTrack(startedAt: began)
+        $0.progress = 0
+        $0.phase = ""
+      }
+    }
     scheduleSave()
     do {
       guard let task = task(ownerId, taskId) else { throw JarvisException("任务不存在") }
@@ -983,7 +1063,7 @@ public final class JarvisStore: ObservableObject {
             self?.scheduleSave()
           }
         },
-        onProgress: { [weak self] p in Task { @MainActor in self?.updateTask(ownerId, taskId) { $0.progress = p } } })
+        onProgress: { [weak self] report in Task { @MainActor in self?.noteMedia(ownerId, taskId, report) } })
       if mediaActive[taskId] != request { return }
       if urls.isEmpty { throw JarvisException("任务没有返回作品地址") }
       updateTask(ownerId, taskId) {
@@ -992,11 +1072,15 @@ public final class JarvisStore: ObservableObject {
         $0.error = nil
         $0.progress = 100
       }
+      learnTimings(ownerId, taskId)
     } catch {
       if mediaActive[taskId] == request {
+        let stuck = (error as? JarvisException)?.stalled == true
         updateTask(ownerId, taskId) {
-          $0.status = "failed"
+          $0.status = stuck ? "interrupted" : "failed"
           $0.error = (error as? JarvisException)?.message ?? "生成失败，请稍后重试原任务"
+          // A job that stopped reporting is not followed again: the retry submits a new one.
+          if stuck { $0.jobId = nil }
         }
       }
     }
@@ -1004,10 +1088,35 @@ public final class JarvisStore: ObservableObject {
     if !disposed { await save() }
   }
 
+  /// A report of the service about a running job: the number, the stage, and when each part of the run began.
+  func noteMedia(_ ownerId: String, _ taskId: String, _ report: MediaReport) {
+    let at = clock()
+    updateTask(ownerId, taskId) { task in
+      guard task.pending else { return }
+      task.progress = report.progress
+      if !report.phase.isEmpty { task.phase = report.phase }
+      var track = task.track ?? MediaTrack(startedAt: at)
+      track.note(report, at: at)
+      task.track = track
+    }
+  }
+
+  /// What a finished run took becomes part of what the next one is said to need.
+  func learnTimings(_ ownerId: String, _ taskId: String) {
+    guard let task = task(ownerId, taskId), let track = task.track else { return }
+    var seen = mediaTimings
+    seen.learn(kind: task.kind, args: task.args, track: track, finishedAt: clock())
+    guard seen != mediaTimings else { return }
+    mediaTimings = seen
+    if let data = try? JSONEncoder().encode(seen) { timingDefaults.set(data, forKey: Self.timingKey) }
+  }
+
   /// How often a voice job is asked about, and how long it is followed before it is marked interrupted (a stuck server
   /// task would otherwise be polled forever and keep its conversation from being deleted).
-  public var voicePollInterval: TimeInterval = 3
+  public var voicePollInterval: TimeInterval = 1
   public var voicePollDeadline: TimeInterval = 30 * 60
+  /// How long a followed job may report nothing before it is given up as stuck (nil: by kind).
+  public var voiceQuietLimit: TimeInterval?
 
   func pollVoiceTask(_ ownerId: String, _ taskId: String) {
     Task { await pollVoiceTaskNow(ownerId, taskId) }
@@ -1019,6 +1128,8 @@ public final class JarvisStore: ObservableObject {
     mediaActive[taskId] = request
     var failures = 0
     let started = Date()
+    var lastKey = ""
+    var lastMove = Date()
     // Checked after asking, never before: the first poll after iOS kept the app suspended past the deadline must not
     // write off a job the server has finished in the meantime.
     func overdue() -> Bool { Date().timeIntervalSince(started) > voicePollDeadline }
@@ -1049,6 +1160,10 @@ public final class JarvisStore: ObservableObject {
       }
       if mediaActive[taskId] != request || !pending() { break }
       let status = state["status"]?.string
+      var justCompleted = false
+      noteMedia(
+        ownerId, taskId,
+        MediaReport(progress: state["progress"]?.double ?? 0, phase: state["phase"]?.string ?? "", status: status ?? ""))
       updateTask(ownerId, taskId) { task in
         task.progress = state["progress"]?.double ?? task.progress
         if ["completed", "succeeded"].contains(status ?? "") {
@@ -1062,9 +1177,31 @@ public final class JarvisStore: ObservableObject {
           task.status = task.urls.isEmpty ? "failed" : "completed"
           task.error = task.urls.isEmpty ? "任务未返回作品地址" : nil
           task.progress = 100
+          justCompleted = !task.urls.isEmpty
         } else if ["failed", "cancelled"].contains(status ?? "") {
           task.status = "failed"
           task.error = "生成失败，请重试原任务"
+        }
+      }
+      if justCompleted { learnTimings(ownerId, taskId) }
+      if pending() {
+        let key = "\(state["progress"]?.double ?? 0)|\(state["phase"]?.string ?? "")"
+        if key != lastKey || state["phase"]?.string == "queued" || status == "queued" {
+          lastKey = key
+          lastMove = Date()
+        } else if let t = task(ownerId, taskId),
+          Date().timeIntervalSince(lastMove) > (voiceQuietLimit ?? MediaProgress.quietLimit(kind: t.kind, args: t.args))
+        {
+          let message = MediaProgress.quietMessage(Date().timeIntervalSince(lastMove))
+          updateTask(ownerId, taskId) {
+            $0.status = "interrupted"
+            $0.error = message
+            // Followed no more; the retry submits a new job.
+            $0.jobId = nil
+            $0.source = "http"
+          }
+          scheduleSave()
+          break loop
         }
       }
       if pending() && overdue() { interrupt("任务等待时间过长，服务器可能仍在运行；请检查原任务") }
@@ -1093,11 +1230,13 @@ public final class JarvisStore: ObservableObject {
         task = MediaTask(
           id: newId(), kind: event["name"]?.string == "generate_video" ? "video" : "image", prompt: args["prompt"]?.string ?? "",
           args: args, callId: call, status: "in_progress", source: "voice")
+        task?.track = MediaTrack(startedAt: clock())
       }
     } else if task == nil {
       task = MediaTask(
         id: newId(), kind: hint.contains("video") ? "video" : "image", prompt: "", args: [:], callId: call,
         status: "in_progress", source: "voice")
+      task?.track = MediaTrack(startedAt: clock())
     }
     guard var task else { return }
     if !owner.tasks.contains(where: { $0.id == task.id }) {

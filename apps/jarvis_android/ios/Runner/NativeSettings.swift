@@ -33,6 +33,9 @@ struct SettingsState: Codable {
     var engine: String?
     var voices: [Voice]
     var voice: String?
+    /// The thinking strength picked for calls ("" follows the server) and the one the server would use.
+    var effort: String
+    var serverEffort: String
     var missing: Bool
     var previewId: String?
     var previewLoading: Bool
@@ -305,6 +308,7 @@ struct SettingsView: View {
             appearance.id("appearance")
             chat.id("chat")
             voices.id("voice")
+            voiceEffortCard
             recognition
             handsFree
             dataSection.id("data")
@@ -505,6 +509,33 @@ struct SettingsView: View {
   }
 
   // MARK: Voices
+
+  private static let effortNames = ["none": "关闭", "low": "低", "medium": "中", "high": "高"]
+
+  /// The voice strength as the page names it. Empty follows the server (named with the server's own word when the catalog
+  /// has been read; before that it does not guess one). In the menu the ends also say what they cost or buy in a call; in
+  /// the row the value stays short.
+  private static func voiceEffortLabel(_ id: String, server: String, detailed: Bool) -> String {
+    switch id {
+    case "": return server.isEmpty ? "跟随服务端" : "跟随服务端（\(effortNames[server] ?? server)）"
+    case "none": return detailed ? "关闭（响应最快）" : "关闭"
+    case "high": return detailed ? "高（响应较慢）" : "高"
+    default: return effortNames[id] ?? id
+    }
+  }
+
+  /// How hard a call thinks before answering: its own setting, apart from the chat's.
+  private var voiceEffortCard: some View {
+    SettingsCard("语音思考") {
+      PickRow(
+        title: "语音思考深度", subtitle: "仅用于语音通话", value: Self.voiceEffortLabel(s.speech.effort, server: s.speech.serverEffort, detailed: false),
+        options: ["", "none", "low", "medium", "high"].map {
+          ($0, Self.voiceEffortLabel($0, server: s.speech.serverEffort, detailed: true))
+        },
+        selected: s.speech.effort
+      ) { value in store.act("voiceEffort", value) { $0.speech.effort = value } }
+    }
+  }
 
   private var voices: some View {
     SettingsCard("语音与音色") {

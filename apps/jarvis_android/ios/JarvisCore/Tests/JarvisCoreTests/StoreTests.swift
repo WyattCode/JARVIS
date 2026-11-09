@@ -30,7 +30,13 @@ final class FakeTransport: Transport, @unchecked Sendable {
     }
   }
   func logout() async throws { cookie = nil }
-  func models() async throws -> [ModelInfo] { try modelsResult.get() }
+  var modelsCalls = 0
+  /// The speech engine the voice tests use.
+  var speechModel: ModelInfo { ModelInfo("tts", "tts", kind: "speech", voices: [VoiceInfo("amy", "Amy", "")], defaultVoice: "amy") }
+  func models() async throws -> [ModelInfo] {
+    modelsCalls += 1
+    return try modelsResult.get()
+  }
   func modelSkill() async throws -> [String: JSONValue] { skill }
   func modelTool(requestId: String, name: String, args: [String: JSONValue]) async throws -> String {
     toolCalls.append((name, args))
@@ -65,10 +71,10 @@ final class FakeTransport: Transport, @unchecked Sendable {
   func cancel(_ requestId: String) { lock.lock(); cancelled.append(requestId); lock.unlock() }
   func generate(
     requestId: String, kind: String, args: [String: JSONValue], resumeJobId: String?, onJob: ((String) -> Void)?,
-    onProgress: ((Double) -> Void)?
+    onProgress: ((MediaReport) -> Void)?
   ) async throws -> [String] {
     onJob?("job-1")
-    onProgress?(50)
+    onProgress?(MediaReport(progress: 50, phase: "generating", status: "in_progress"))
     if generateDelay > 0 { try await Task.sleep(nanoseconds: UInt64(generateDelay * 1_000_000_000)) }
     return try generated.get()
   }
@@ -502,5 +508,83 @@ final class StoreTests: XCTestCase {
     XCTAssertTrue(store.current.named)
     store.rename(store.current.id, "   ")
     XCTAssertEqual(store.current.title, "我的名字")
+  }
+
+  func testAFinishedRunTeachesTheNextOneHowLongItTakes() async throws {
+    await signedIn()
+    let defaults = UserDefaults(suiteName: "media-timings-\(UUID().uuidString)")!
+    store.timingDefaults = defaults
+    var now = 5000.0
+    store.clock = { now }
+    api.generateDelay = 5
+    store.startMedia(kind: "image", prompt: "猫", args: ["size": .string("1024x1024")])
+    for _ in 0..<50 where store.current.tasks.first?.status != "in_progress" { try await Task.sleep(nanoseconds: 20_000_000) }
+    let owner = store.current.id
+    let id = store.current.tasks[0].id
+    XCTAssertNotNil(store.current.tasks[0].track, "a run starts its timeline")
+    store.updateTask(owner, id) {
+      var track = MediaTrack(startedAt: 5000)
+      track.genAt = 5001
+      track.stepAt = 5011
+      track.tailAt = 5018
+      $0.track = track
+    }
+    now = 5020
+    store.learnTimings(owner, id)
+    XCTAssertEqual(store.mediaTimings.image.runs, 1)
+    XCTAssertGreaterThan(store.mediaTimings.image.prep, MediaTimings.prior.image.prep)
+    XCTAssertNotNil(defaults.data(forKey: "mediaTimings.v1"))
+    store.cancelMediaTask(owner, id)
+  }
+
+  func testAReportMovesTheCardsNumberStageAndTimeline() async throws {
+    await signedIn()
+    store.clock = { 100 }
+    api.generateDelay = 5
+    store.startMedia(kind: "image", prompt: "海")
+    for _ in 0..<50 where store.current.tasks.first?.status != "in_progress" { try await Task.sleep(nanoseconds: 20_000_000) }
+    let owner = store.current.id
+    let id = store.current.tasks[0].id
+    store.noteMedia(owner, id, MediaReport(progress: 37, phase: "generating", status: "in_progress"))
+    let task = store.current.tasks[0]
+    XCTAssertEqual(task.progress, 37)
+    XCTAssertEqual(task.phase, "generating")
+    XCTAssertEqual(task.track?.lastProgress, 37)
+    store.cancelMediaTask(owner, id)
+    store.noteMedia(owner, id, MediaReport(progress: 80, phase: "generating"))
+    XCTAssertEqual(store.current.tasks[0].progress, 37, "a cancelled card is not moved by a late report")
+  }
+
+  func testAVoiceJobThatStopsReportingIsInterruptedAndItsRetrySubmitsANewOne() async throws {
+    await signedIn()
+    store.voicePollInterval = 0.01
+    store.voiceQuietLimit = 0.1
+    api.jobs = Array(repeating: ["status": .string("in_progress"), "phase": .string("generating"), "progress": JSONValue.number(51)], count: 400)
+    let owner = store.current.id
+    store.voiceTask(owner, ["type": .string("call"), "name": .string("generate_image"), "call_id": .string("vs"), "arguments": .string("{\"prompt\":\"海\"}")])
+    store.voiceTask(owner, ["type": .string("localrouter.job.created"), "call_id": .string("vs"), "job_id": .string("jstuck")])
+    for _ in 0..<150 where store.current.tasks.first?.status != "interrupted" { try await Task.sleep(nanoseconds: 20_000_000) }
+    let task = store.current.tasks[0]
+    XCTAssertEqual(task.status, "interrupted")
+    XCTAssertTrue(task.error?.contains("没有新进展") == true)
+    XCTAssertNil(task.jobId, "a stuck job is not followed again")
+    XCTAssertEqual(task.source, "http")
+    XCTAssertEqual(task.progress, 51)
+  }
+
+  func testRetryingAVoiceJobClearsTheOldMessage() async throws {
+    await signedIn()
+    store.voicePollInterval = 0.01
+    api.jobs = [["status": .string("completed"), "urls": .array([.string("/v1/files/r.png")])]]
+    let owner = store.current.id
+    store.voiceTask(owner, ["type": .string("call"), "name": .string("generate_image"), "call_id": .string("vr"), "arguments": .string("{\"prompt\":\"海\"}")])
+    store.voiceTask(owner, ["type": .string("localrouter.job.created"), "call_id": .string("vr"), "job_id": .string("jr")])
+    for _ in 0..<100 where store.current.tasks.first?.status != "completed" { try await Task.sleep(nanoseconds: 20_000_000) }
+    let id = store.current.tasks[0].id
+    store.updateTask(owner, id) { $0.status = "interrupted"; $0.error = "任务等待时间过长" }
+    api.jobs = [["status": .string("completed"), "urls": .array([.string("/v1/files/r.png")])]]
+    await store.retryMedia(owner, id)
+    XCTAssertNil(store.current.tasks[0].error)
+    XCTAssertEqual(store.current.tasks[0].status, "completed")
   }
 }

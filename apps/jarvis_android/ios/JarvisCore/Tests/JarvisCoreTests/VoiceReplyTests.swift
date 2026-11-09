@@ -937,6 +937,41 @@ extension VoiceTests {
     XCTAssertEqual(try XCTUnwrap(voice.speechProgress?.total), 1, accuracy: 0.001)
   }
 
+  func testTheTalkButtonOffersToStopOnlyWhileTheReplyIsBeingSaid() async {
+    await startCall()
+    XCTAssertFalse(voice.canStopSpeech, "nothing is being said")
+    created("r1")
+    delta("a1", "你好你好。", response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    XCTAssertFalse(voice.canStopSpeech, "sound has arrived but the player has not started on it")
+    playing(buffered: 24000)
+    await settle({ [self] in voice.speaking })
+    XCTAssertTrue(voice.canStopSpeech)
+    // the player runs dry while the server is still making the reply: the voice is waiting, and can still be stopped
+    playing(buffered: 0, active: false)
+    await settle({ [self] in !voice.speaking })
+    XCTAssertTrue(voice.canStopSpeech)
+    await voice.interrupt()
+    XCTAssertFalse(voice.canStopSpeech, "stopped")
+  }
+
+  func testTheTalkButtonStopsOfferingOnceTheReplyHasBeenSaidToTheEnd() async {
+    await startCall()
+    created("r1")
+    delta("a1", "你好你好。", response: "r1")
+    second()
+    await settle({ [self] in audio.fed.count == 1 })
+    playing(buffered: 24000)
+    await settle({ [self] in voice.speaking })
+    done("r1", output: [output("a1", "你好你好。")])
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    playing(buffered: 0, active: false)
+    await settle({ [self] in !voice.speaking })
+    await settle({ [self] in voice.speechProgress?.live == false })
+    XCTAssertFalse(voice.canStopSpeech)
+  }
+
   func testAFinishedReplyIsNotFollowedAndANewReplyStartsFromNothing() async throws {
     await startCall()
     created("r1")
@@ -1003,25 +1038,27 @@ extension VoiceTests {
 
   func testAVoiceThatSpeaksFasterThanTheStartingPaceIsLearnedForTheNextReply() async throws {
     await startCall()
-    // "你好你好" weighs 4 units and its sound is one second long: a pace of 0.25 s a unit
+    // 40 characters weigh 40 units and their sound is eight seconds long: a pace of 0.2 s a unit (a reply of a few characters
+    // says too little to be learned from)
+    let words = String(repeating: "你好", count: 20)
     created("r1")
-    delta("a1", "你好你好", response: "r1")
-    second()
-    await settle({ [self] in audio.fed.count == 1 })
+    delta("a1", words, response: "r1")
+    for _ in 0..<8 { second() }
+    await settle({ [self] in audio.fed.count == 8 })
     playing(buffered: 24000)
     await settle({ [self] in voice.speaking })
     wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
     await settle({ [self] in voice.speechProgress?.total != nil })
-    done("r1", output: [output("a1", "你好你好")])
+    done("r1", output: [output("a1", words)])
     playing(buffered: 0, active: false)
     await settle({ [self] in !voice.speaking })
     created("r2")
     delta("a2", "再来一句", response: "r2")
     second("r2")
-    await settle({ [self] in audio.fed.count == 2 })
+    await settle({ [self] in audio.fed.count == 9 })
     playing(buffered: 24000)
     await settle({ [self] in voice.speaking })
-    XCTAssertEqual(try XCTUnwrap(voice.speechProgress).pace, 0.25, accuracy: 0.001, "r2 starts from what r1 showed")
+    XCTAssertEqual(try XCTUnwrap(voice.speechProgress).pace, 0.2, accuracy: 0.001, "r2 starts from what r1 showed")
   }
 
   // MARK: A reply the sound of which ends in parts
@@ -1221,22 +1258,53 @@ extension VoiceTests {
     XCTAssertEqual(p.played, 3, accuracy: 0.001)
   }
 
-  func testWhatAVoiceShowedOfItsSpeedIsKeptForTheNextCall() async throws {
-    await startCall()
-    created("r1")
-    delta("a1", "你好你好", response: "r1")
-    second()
-    await settle({ [self] in audio.fed.count == 1 })
+  /// A reply of `count` characters said in `seconds` seconds (one second of sound per `second()`), said to its end.
+  private func saidReply(_ count: Int, seconds: Int, response: String = "r1") async {
+    let words = String(repeating: "你好", count: count / 2)
+    created(response)
+    delta("a1", words, response: response)
+    for _ in 0..<seconds { second(response) }
+    await settle({ [self] in audio.fed.count >= seconds })
     playing(buffered: 24000)
     await settle({ [self] in voice.speaking })
-    done("r1", output: [output("a1", "你好你好")])
-    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string("r1")])
+    done(response, output: [output("a1", words)])
+    wire.emit(["type": .string("localrouter.response.speech_done"), "response_id": .string(response)])
     await settle({ [self] in voice.speechProgress?.total != nil })
+  }
+
+  func testWhatAVoiceShowedOfItsSpeedIsKeptForTheNextCall() async throws {
+    await startCall()
+    await saidReply(40, seconds: 8)
     await voice.stop()
     XCTAssertTrue(voice.paceDefaults.dictionaryRepresentation().keys.contains { $0.hasPrefix("speechPace.") })
     // the next call starts from it
     await startCall()
-    XCTAssertEqual(voice.carriedSpeechPace, 0.25, accuracy: 0.001, "1 s for four characters")
+    XCTAssertEqual(voice.carriedSpeechPace, 0.2, accuracy: 0.001, "8 s for 40 characters")
+  }
+
+  func testAShortReplyDoesNotMoveTheCarriedPace() async throws {
+    await startCall()
+    await saidReply(40, seconds: 8)
+    await voice.stop()
+    await startCall()
+    XCTAssertEqual(voice.carriedSpeechPace, 0.2, accuracy: 0.001)
+    // four characters said in one second would be 0.25 a character: too few characters to say anything about the voice
+    await saidReply(4, seconds: 1, response: "r2")
+    await voice.stop()
+    await startCall()
+    XCTAssertEqual(voice.carriedSpeechPace, 0.2, accuracy: 0.001, "a short reply leaves the pace alone")
+  }
+
+  func testALongerReplyCountsForMoreThanAShortOne() async throws {
+    await startCall()
+    await saidReply(40, seconds: 8)
+    await voice.stop()
+    await startCall()
+    // 60 characters in 15 s = 0.25 a character, taken with the weight 60 / 200 = 0.3: 0.2 * 0.7 + 0.25 * 0.3 = 0.215
+    await saidReply(60, seconds: 15, response: "r2")
+    await voice.stop()
+    await startCall()
+    XCTAssertEqual(voice.carriedSpeechPace, 0.215, accuracy: 0.002)
   }
 
   func testTheServersErrorsAndLongSilencesAreInTheTrace() async {

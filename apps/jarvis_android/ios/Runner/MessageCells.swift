@@ -521,24 +521,14 @@ final class TaskCell: MessageCell {
     info.axis = .vertical
     info.spacing = 8
     info.isLayoutMarginsRelativeArrangement = true
-    info.layoutMargins = UIEdgeInsets(top: 12, left: 16, bottom: 4, right: 16)
-    let prompt = UILabel()
-    prompt.numberOfLines = 3
-    prompt.font = .systemFont(ofSize: 16)
-    prompt.text = task.prompt.isEmpty ? (video ? "视频任务" : "图片任务") : task.prompt
-    info.addArrangedSubview(prompt)
-    if task.pending {
-      let bar = UIProgressView(progressViewStyle: .bar)
-      bar.progress = Float(task.progress / 100)
-      if task.progress <= 0 { bar.progress = 0.05 }
-      let note = UILabel()
-      note.font = .systemFont(ofSize: 12)
-      note.textColor = Palette.onSurfaceVariant
-      note.text = "后台生成中\(task.progress > 0 ? " · \(Int(task.progress.rounded()))%" : "")，可以继续对话"
-      info.addArrangedSubview(bar)
-      info.addArrangedSubview(note)
+    info.layoutMargins = UIEdgeInsets(top: 12, left: 16, bottom: 8, right: 16)
+    // The prompt is not written out here: "复制提示词" below has it.
+    if task.pending || task.status == "interrupted" {
+      let running = MediaProgressView()
+      running.update(task)
+      info.addArrangedSubview(running)
     }
-    if let error = task.error {
+    if let error = task.error, task.status != "interrupted" {
       let e = UILabel()
       e.numberOfLines = 0
       e.font = .systemFont(ofSize: 14)
@@ -546,12 +536,15 @@ final class TaskCell: MessageCell {
       e.text = error
       info.addArrangedSubview(e)
     }
-    stack.addArrangedSubview(info)
+    if !info.arrangedSubviews.isEmpty { stack.addArrangedSubview(info) }
     let buttons = UIStackView()
     buttons.axis = .horizontal
     buttons.spacing = 4
     buttons.isLayoutMarginsRelativeArrangement = true
-    buttons.layoutMargins = UIEdgeInsets(top: 0, left: 4, bottom: 6, right: 4)
+    buttons.layoutMargins = UIEdgeInsets(top: info.arrangedSubviews.isEmpty ? 6 : 0, left: 4, bottom: 6, right: 4)
+    if !task.pending && task.status != "completed" {
+      buttons.addArrangedSubview(action("arrow.clockwise", "重试", tint: Palette.accent) { [weak self] _ in self?.bridge.send(["a": "retryTask", "id": task.id]) })
+    }
     if !task.prompt.isEmpty {
       buttons.addArrangedSubview(action("doc.on.doc", "复制提示词") { [weak self] b in
         UIPasteboard.general.string = task.prompt
@@ -569,9 +562,6 @@ final class TaskCell: MessageCell {
     if task.pending && task.canCancel {
       buttons.addArrangedSubview(action("xmark", "取消") { [weak self] _ in self?.bridge.send(["a": "cancelTask", "id": task.id]) })
     }
-    if !task.pending && task.status != "completed" {
-      buttons.addArrangedSubview(action("arrow.clockwise", "重试") { [weak self] _ in self?.bridge.send(["a": "retryTask", "id": task.id]) })
-    }
     buttons.addArrangedSubview(UIView())
     stack.addArrangedSubview(buttons)
   }
@@ -582,13 +572,13 @@ final class TaskCell: MessageCell {
     return v
   }
 
-  private func action(_ symbol: String, _ title: String, _ run: @escaping (UIButton) -> Void) -> UIButton {
+  private func action(_ symbol: String, _ title: String, tint: UIColor = Palette.onSurfaceVariant, _ run: @escaping (UIButton) -> Void) -> UIButton {
     var c = UIButton.Configuration.plain()
     c.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .regular))
     c.title = title
     c.titleLineBreakMode = .byTruncatingTail
     c.imagePadding = 6
-    c.baseForegroundColor = Palette.onSurfaceVariant
+    c.baseForegroundColor = tint
     c.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12)
     c.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
       var a = $0

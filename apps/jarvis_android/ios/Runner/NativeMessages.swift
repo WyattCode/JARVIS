@@ -21,6 +21,10 @@ struct RowData: Codable {
     var error: String?
     var pending: Bool
     var canCancel: Bool
+    var phase: String?
+    /// When each part of the run was reported, and how long each is expected to take (for the running card).
+    var track: MediaTrack?
+    var plan: MediaPlan?
   }
   var id: String
   /// user, assistant, task or tool (the "calling a tool" line).

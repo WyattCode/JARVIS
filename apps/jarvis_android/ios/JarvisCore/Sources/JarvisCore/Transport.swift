@@ -18,7 +18,7 @@ public protocol Transport: AnyObject, Sendable {
   func cancel(_ requestId: String)
   func generate(
     requestId: String, kind: String, args: [String: JSONValue], resumeJobId: String?, onJob: ((String) -> Void)?,
-    onProgress: ((Double) -> Void)?
+    onProgress: ((MediaReport) -> Void)?
   ) async throws -> [String]
   func jobStatus(_ id: String) async throws -> [String: JSONValue]
   func mediaURL(_ path: String) throws -> URL

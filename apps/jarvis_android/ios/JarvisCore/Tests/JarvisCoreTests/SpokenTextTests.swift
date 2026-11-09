@@ -247,4 +247,114 @@ final class SpokenTextTests: XCTestCase {
     XCTAssertEqual(rests[0].length, 2.5 * 0.2, accuracy: 1e-9)
     XCTAssertEqual(rests[1].at, (3 + 2.5 + 2 + 1.2 + 3) * 0.2, accuracy: 1e-9)
   }
+
+  // MARK: Words set against the rests of the sound
+
+  /// Three sentences of ten characters each: at 0.2 s a unit the words put the rests at 2.0, 4.5 and 7.0 s, 0.5 s long.
+  private let threeSentences = "一二三四五六七八九十。一二三四五六七八九十。一二三四五六七八九十。"
+  private func rest(_ at: Double, _ length: Double = 0.5) -> SoundRests.Rest { SoundRests.Rest(at: at, length: length) }
+
+  func testWithoutRestsThePlaceIsTheOneTheWordsGive() {
+    let t = SpokenText(threeSentences)
+    for s in stride(from: 0.0, through: 9.0, by: 0.7) {
+      XCTAssertEqual(try XCTUnwrap(t.position(at: s, pace: 0.2, rests: [])), try XCTUnwrap(t.position(at: s, pace: 0.2)), accuracy: 1e-9)
+    }
+  }
+
+  func testAVoiceThatPausesLaterThanTheWordsSayIsNotRunAheadOf() {
+    let t = SpokenText(threeSentences)
+    // the voice pauses 0.6 s later than the words say, each time
+    let rests = [rest(2.6), rest(5.7), rest(8.8)]
+    // the words alone are on the full stop's second half by now; set against the rest, it is at the stop
+    XCTAssertGreaterThan(try XCTUnwrap(t.position(at: 2.6, pace: 0.2)), 10.5)
+    XCTAssertEqual(try XCTUnwrap(t.position(at: 2.6, pace: 0.2, rests: rests)), 10, accuracy: 0.01)
+    // and when the rest is over, the words go on from the first character after the stop
+    XCTAssertEqual(try XCTUnwrap(t.position(at: 3.1, pace: 0.2, rests: rests)), 11, accuracy: 0.05)
+  }
+
+  func testTheEdgeNeverGoesBackWhenRestsAreSet() throws {
+    let t = SpokenText(threeSentences)
+    let rests = [rest(2.4), rest(5.0, 0.6), rest(9.0)]
+    var last = -1.0
+    for s in stride(from: 0.0, through: 10.0, by: 0.05) {
+      let p = try XCTUnwrap(t.position(at: s, pace: 0.2, rests: rests))
+      XCTAssertGreaterThanOrEqual(p, last - 1e-9, "went back at \(s)")
+      last = p
+    }
+  }
+
+  func testABreathIsNotTheEndOfASentence() {
+    let t = SpokenText(threeSentences)
+    XCTAssertEqual(t.alignedPauses(pace: 0.2, rests: [rest(2.6, 0.2), rest(5.7, 0.25)]).matched, 0)
+    XCTAssertEqual(try XCTUnwrap(t.position(at: 2.6, pace: 0.2, rests: [rest(2.6, 0.2)])), try XCTUnwrap(t.position(at: 2.6, pace: 0.2)), accuracy: 1e-9)
+  }
+
+  func testARestFarFromWhereTheWordsPutItIsNotTheirSentenceEnd() {
+    let t = SpokenText(threeSentences)
+    XCTAssertEqual(t.alignedPauses(pace: 0.2, rests: [rest(3.25)]).matched, 0, "1.25 s from the first sentence end and from the second")
+    XCTAssertEqual(t.alignedPauses(pace: 0.2, rests: [rest(10.5)]).matched, 0)
+    let found = t.alignedPauses(pace: 0.2, rests: [rest(2.6), rest(7.5)])
+    XCTAssertEqual(found.of, 3)
+    XCTAssertEqual(found.matched, 2)
+  }
+
+  func testAFalseMatchAtAnImpossibleSpeedIsLeftOut() {
+    let t = SpokenText(threeSentences)
+    // the second rest would make the second sentence last 0.8 s of sound for 2.0 s of words
+    XCTAssertEqual(t.alignedPauses(pace: 0.2, rests: [rest(2.0), rest(3.3)]).matched, 1)
+  }
+
+  func testTheCountsAreForTheTraceAndTheTextWithoutPausesHasNone() {
+    let t = SpokenText("没有句号的一段话")
+    XCTAssertEqual(t.alignedPauses(pace: 0.2, rests: [rest(2.0)]).matched, 0)
+    XCTAssertEqual(t.alignedPauses(pace: 0.2, rests: [rest(2.0)]).of, 0)
+    XCTAssertEqual(try XCTUnwrap(t.position(at: 1.0, pace: 0.2, rests: [rest(2.0)])), try XCTUnwrap(t.position(at: 1.0, pace: 0.2)), accuracy: 1e-9)
+  }
+
+  func testTheSpeechProgressPlacesTheWordsByItsRests() {
+    let t = SpokenText(threeSentences)
+    let plain = SpeechProgress(played: 2.1, total: nil, pace: 0.2, live: true, cut: false)
+    let set = SpeechProgress(played: 2.1, total: nil, pace: 0.2, live: true, cut: false, rests: [rest(2.6), rest(5.7), rest(8.8)])
+    // 2.1 s played + 0.5 s lead = the rest's start: the edge is at the stop
+    XCTAssertEqual(try XCTUnwrap(set.position(in: t)), 10, accuracy: 0.01)
+    XCTAssertGreaterThan(try XCTUnwrap(plain.position(in: t)), 10.5)
+  }
+
+  func testAVoiceSevenPercentOffThePaceTheWordsWereLaidOutWithStaysWithTheSentences() throws {
+    let t = SpokenText(String(repeating: "一二三四五六七八九十。", count: 8))
+    // The words are laid out at 0.2 s a unit; the voice really takes 0.186 s (7% quicker), rests as long as the words say.
+    let real = 0.186
+    var rests: [SoundRests.Rest] = []
+    for k in 0..<8 { rests.append(rest((Double(k) * 12.5 + 10) * real, 2.5 * real)) }
+    for k in 1..<8 {
+      let endOfSentence = Double(k) * 12.5 + 10 // units before the full stop of sentence k
+      let p = try XCTUnwrap(t.position(at: endOfSentence * real, pace: 0.2, rests: rests))
+      XCTAssertEqual(p, Double(k * 11 + 10), accuracy: 0.05, "sentence \(k) ends where the words end")
+    }
+    // without the rests the last one would be 7% (about 5 characters) off
+    let plain = try XCTUnwrap(t.position(at: (7 * 12.5 + 10) * real, pace: 0.2))
+    XCTAssertGreaterThan(abs(plain - Double(7 * 11 + 10)), 3)
+  }
+
+  func testARestAtACommaIsNotTakenForTheNextSentenceEnd() {
+    // sentence one ends at 2.0 s (rest 0.5 s); the comma in sentence two is at about 3.4 s; the voice runs 0.5 s slow
+    let t = SpokenText("一二三四五六七八九十。一二三四五，六七八九十。")
+    let rests = [rest(2.5), rest(3.9, 0.35), rest(6.2)]
+    let found = t.alignedPauses(pace: 0.2, rests: rests)
+    XCTAssertEqual(found.of, 2)
+    XCTAssertEqual(found.matched, 2, "the comma's rest stays out, the second full stop finds its own")
+    // and the second sentence end is set against the last rest, not against the comma's
+    XCTAssertEqual(try XCTUnwrap(t.position(at: 6.2, pace: 0.2, rests: rests)), 22, accuracy: 0.05)
+  }
+
+  func testTheSilenceAtTheStartOfTheSoundIsNotTheEndOfAShortFirstSentence() throws {
+    // "好的。" is over at 0.4 s by the words; the sound opens with 0.4 s of silence; the second sentence ends at 3.34 s by the words
+    let t = SpokenText("好的。这是第二句话，说得长一点。")
+    let rests = [rest(0, 0.4), rest(3.6)]
+    let found = t.alignedPauses(pace: 0.2, rests: rests)
+    XCTAssertEqual(found.of, 2)
+    XCTAssertEqual(found.matched, 1, "only the rest at 3.6 s is a sentence end; the silence at 0 s is not the first one")
+    // and the edge is not carried past the first sentence while the silence plays
+    XCTAssertLessThan(try XCTUnwrap(t.position(at: 0.4, pace: 0.2, rests: [rest(0, 0.4)])), 3)
+  }
 }

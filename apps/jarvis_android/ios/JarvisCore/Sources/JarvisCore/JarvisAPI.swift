@@ -3,9 +3,15 @@ import Foundation
 public struct JarvisException: Error, Equatable, CustomStringConvertible {
   public let message: String
   public let unauthorized: Bool
-  public init(_ message: String, unauthorized: Bool = false) {
+  /// The HTTP status the service answered with, when the error is its answer.
+  public let status: Int?
+  /// A job the service stopped reporting on for too long (it may be stuck): followed no further, and a retry makes a new one.
+  public let stalled: Bool
+  public init(_ message: String, unauthorized: Bool = false, status: Int? = nil, stalled: Bool = false) {
     self.message = message
     self.unauthorized = unauthorized
+    self.status = status
+    self.stalled = stalled
   }
   public var description: String { message }
 }
@@ -148,7 +154,9 @@ public final class JarvisAPI: @unchecked Sendable {
   /// with images and a slow model reading a long prompt before its first byte.
   public var chatHeaderTimeout: Double = 90
   /// How long the video poll waits between two looks (tests make it short).
-  public var pollInterval: Double = 3
+  public var pollInterval: Double = 1
+  /// How long a job may report nothing before it is given up as stuck (nil: by kind, see `MediaProgress.quietLimit`).
+  public var quietLimit: TimeInterval?
 
   private let configuration: URLSessionConfiguration
   private let lock = NSLock()
@@ -261,7 +269,7 @@ public final class JarvisAPI: @unchecked Sendable {
   private func check(_ r: HTTPURLResponse) throws {
     if r.statusCode == 401 || r.statusCode == 303 { throw JarvisException("登录已过期，请重新登录", unauthorized: true) }
     if !(200..<300).contains(r.statusCode) {
-      throw JarvisException(r.statusCode == 429 ? "请求过于频繁，请稍后重试" : "服务暂时不可用（\(r.statusCode)）")
+      throw JarvisException(r.statusCode == 429 ? "请求过于频繁，请稍后重试" : "服务暂时不可用（\(r.statusCode)）", status: r.statusCode)
     }
   }
 
@@ -582,7 +590,7 @@ public final class JarvisAPI: @unchecked Sendable {
 
   public func generate(
     requestId: String, kind: String, args: [String: JSONValue], resumeJobId: String? = nil,
-    onJob: ((String) -> Void)? = nil, onProgress: ((Double) -> Void)? = nil
+    onJob: ((String) -> Void)? = nil, onProgress: ((MediaReport) -> Void)? = nil
   ) async throws -> [String] {
     let session = makeSession(idle: 900)
     register(requestId, session)
@@ -600,37 +608,106 @@ public final class JarvisAPI: @unchecked Sendable {
       default: return ""
       }
     }
+    func report(_ j: [String: JSONValue]) -> MediaReport {
+      MediaReport(progress: j["progress"]?.double ?? 0, phase: j["phase"]?.string ?? "", status: j["status"]?.string ?? "")
+    }
+    func files(_ j: [String: JSONValue]) -> [String] {
+      let urls = stringList(j["urls"])
+      if !urls.isEmpty { return urls }
+      let named = stringList(j["files"])
+      if !named.isEmpty { return named }
+      return (j["data"]?.array ?? []).compactMap { $0["url"]?.string }
+    }
+    let gone = ["failed", "cancelled", "canceled", "expired"]
+    let running = ["queued", "in_progress", "running"]
     var request: [String: JSONValue] = ["prompt": args["prompt"] ?? .null]
     if let model = args["model"], model != .null { request["model"] = model }
+
+    var j: [String: JSONValue]
+    let path: (String) -> String
+    let failure: String
     if kind == "image" {
       if let size = args["size"], size != .null { request["size"] = .string(show(size)) }
       request["response_format"] = .string("url")
-      let j = try await json("POST", "/v1/images/generations", body: request, wait: 900, session: session)
-      return (j["data"]?.array ?? []).compactMap { $0["url"]?.string }
-    }
-    if let seconds = args["seconds"], seconds != .null { request["seconds"] = .string(show(seconds)) }
-    var j: [String: JSONValue]
-    if let resumeJobId {
-      j = try await json("GET", "/v1/videos/\(Self.pathEncode(resumeJobId))", session: session)
-      // A job the service has given up on is not looked at again (that would fail the same way every time): a new one is made.
-      if ["failed", "cancelled", "canceled", "expired"].contains(j["status"]?.string ?? "") {
-        j = try await json("POST", "/v1/videos", body: request, session: session)
+      path = { "/v1/jobs/\(Self.pathEncode($0))" }
+      failure = "图片生成失败，请检查原任务"
+      // Asked for as a job: the answer is the job's number at once and the picture follows, so the wait can show how far it is.
+      // A service that does not know the option (400) or answers with the finished picture is served the old way.
+      func create() async throws -> [String: JSONValue] {
+        var asked = request
+        asked["wait_s"] = .number(0)
+        do {
+          return try await json("POST", "/v1/images/generations", body: asked, wait: 900, session: session)
+        } catch let e as JarvisException where e.status == 400 || e.status == 422 {
+          return try await json("POST", "/v1/images/generations", body: request, wait: 900, session: session)
+        }
+      }
+      if let resumeJobId, let old = try? await json("GET", path(resumeJobId), session: session), !gone.contains(old["status"]?.string ?? "gone") {
+        j = old
+      } else {
+        j = try await create()
+      }
+      // The finished picture itself (the service waited for it).
+      if j["id"] == nil || (j["status"] == nil && j["data"] != nil) {
+        let done = files(j)
+        if !done.isEmpty { return done }
+        throw JarvisException("服务返回的内容无法读取")
       }
     } else {
-      j = try await json("POST", "/v1/videos", body: request, session: session)
+      if let seconds = args["seconds"], seconds != .null { request["seconds"] = .string(show(seconds)) }
+      path = { "/v1/videos/\(Self.pathEncode($0))" }
+      failure = "视频生成失败，请检查原任务"
+      if let resumeJobId {
+        j = try await json("GET", path(resumeJobId), session: session)
+        // A job the service has given up on is not looked at again (that would fail the same way every time): a new one is made.
+        if gone.contains(j["status"]?.string ?? "") {
+          j = try await json("POST", "/v1/videos", body: request, session: session)
+        }
+      } else {
+        j = try await json("POST", "/v1/videos", body: request, session: session)
+      }
     }
     guard let id = j["id"]?.string ?? resumeJobId else { throw JarvisException("服务返回的内容无法读取") }
     onJob?(id)
     let deadline = Date().addingTimeInterval(30 * 60)
-    while ["queued", "in_progress", "running"].contains(j["status"]?.string ?? "") {
+    var failures = 0
+    var lastKey = ""
+    var lastMove = Date()
+    while running.contains(j["status"]?.string ?? "") {
       if !isCurrent(requestId, session) { throw JarvisException("任务跟踪已取消") }
-      if Date() > deadline { throw JarvisException("视频仍未完成，请稍后重新检查原任务") }
-      onProgress?(j["progress"]?.double ?? 0)
+      // Nothing new for much longer than any step takes: the job is probably stuck on the server. (A job waiting for its turn
+      // may take as long as the ones before it, so that wait is only bounded by the deadline below.)
+      let key = "\(j["progress"]?.double ?? 0)|\(j["phase"]?.string ?? "")"
+      if key != lastKey || j["phase"]?.string == "queued" || j["status"]?.string == "queued" {
+        lastKey = key
+        lastMove = Date()
+      } else if Date().timeIntervalSince(lastMove) > (quietLimit ?? MediaProgress.quietLimit(kind: kind, args: args)) {
+        throw JarvisException(MediaProgress.quietMessage(Date().timeIntervalSince(lastMove)), stalled: true)
+      }
+      if Date() > deadline { throw JarvisException(kind == "image" ? "图片仍未完成，请稍后重新检查原任务" : "视频仍未完成，请稍后重新检查原任务") }
+      onProgress?(report(j))
       try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
       if !isCurrent(requestId, session) { throw JarvisException("任务跟踪已取消") }
-      j = try await json("GET", "/v1/videos/\(Self.pathEncode(id))", session: session)
+      do {
+        j = try await json("GET", path(id), session: session)
+        failures = 0
+      } catch let e as JarvisException {
+        // A dropped connection for a second (a phone moving between networks) does not end a job that is still running.
+        failures += 1
+        if e.unauthorized || failures > 5 { throw e }
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch {
+        failures += 1
+        if failures > 5 { throw error }
+      }
     }
-    guard j["status"]?.string == "completed" else { throw JarvisException("视频生成失败，请检查原任务") }
+    guard j["status"]?.string == "completed" else { throw JarvisException(failure) }
+    if kind == "image" {
+      let done = files(j)
+      if done.isEmpty { throw JarvisException("任务没有返回作品地址") }
+      return done
+    }
     return ["/v1/videos/\(Self.pathEncode(id))/content"]
   }
 }

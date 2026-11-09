@@ -12,6 +12,9 @@ public struct ChatSettings: Equatable, Sendable {
   /// changes is taken once, and the voice the user picks afterwards is kept.
   public var voiceDefaultRevisions: [String: Int] = [:]
   public var voiceMode = "ptt"
+  /// The thinking strength the user picked for calls: "none", "low", "medium" or "high"; empty follows the server's voice
+  /// default. Kept apart from the chat's strength, which a call never inherits.
+  public var voiceEffort = ""
   public var language = ""
   public var transcriptionPrompt = ""
   public var waitMs = 800
@@ -22,6 +25,7 @@ public struct ChatSettings: Equatable, Sendable {
 
   public init() {}
 
+  public static let efforts = ["none", "low", "medium", "high"]
   static let fontSizes: [Double] = [12, 14, 16, 18, 20, 22, 24]
   static let languages = ["", "zh", "en", "ja", "ko", "fr", "de", "es"]
   static let waits = [300, 500, 800, 1000, 1500, 2000, 3000, 4000, 5000]
@@ -32,7 +36,7 @@ public struct ChatSettings: Equatable, Sendable {
       "instructions": .string(instructions), "apiKey": .string(apiKey), "speechModel": .string(speechModel),
       "voices": .object(voices.mapValues { .string($0) }),
       "voiceDefaultRevisions": .object(voiceDefaultRevisions.mapValues { .number(Double($0)) }),
-      "voiceMode": .string(voiceMode), "language": .string(language), "transcriptionPrompt": .string(transcriptionPrompt),
+      "voiceMode": .string(voiceMode), "voiceEffort": .string(voiceEffort), "language": .string(language), "transcriptionPrompt": .string(transcriptionPrompt),
       "waitMs": .number(Double(waitMs)), "threshold": .number(threshold), "echoCancel": .bool(echoCancel),
       "aiNoticeAccepted": .bool(aiNoticeAccepted),
     ]
@@ -54,6 +58,9 @@ public struct ChatSettings: Equatable, Sendable {
       if let n = value.double, n > 0, let whole = wholeNumber(n) { voiceDefaultRevisions[key] = whole }
     }
     voiceMode = j["voiceMode"]?.string == "vad" ? "vad" : "ptt"
+    // Saved before calls had their own strength (or with a value this app does not know): follow the server.
+    let savedEffort = j["voiceEffort"]?.string ?? ""
+    voiceEffort = Self.efforts.contains(savedEffort) ? savedEffort : ""
     let savedLanguage = j["language"]?.string ?? ""
     language = Self.languages.contains(savedLanguage) ? savedLanguage : ""
     transcriptionPrompt = TextClip.clip(j["transcriptionPrompt"]?.string ?? "", 500)

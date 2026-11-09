@@ -46,7 +46,7 @@ final class FlutterFixtureTests: XCTestCase {
 
     let written = StateWriter(vault: MemoryVault()).text(state)
     var expected = try decode(text)
-    // The only change loading makes to the file is that one status.
+    // The only changes loading makes to the file are that one status and the voice strength.
     guard case .object(var root) = expected, case .array(var convs) = root["conversations"],
       case .object(var first) = convs[0], case .array(var messages) = first["messages"],
       case .object(var last) = messages[4]
@@ -56,6 +56,10 @@ final class FlutterFixtureTests: XCTestCase {
     first["messages"] = .array(messages)
     convs[0] = .object(first)
     root["conversations"] = .array(convs)
+    // ...and the call's own thinking strength, which a file written before it had does not carry: it follows the server.
+    guard case .object(var settings) = root["settings"] else { return XCTFail("settings") }
+    settings["voiceEffort"] = .string("")
+    root["settings"] = .object(settings)
     expected = .object(root)
     XCTAssertNil(difference(expected, try decode(written)))
     state.cookie = nil

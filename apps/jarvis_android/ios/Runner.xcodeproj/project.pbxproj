@@ -34,6 +34,8 @@
 		5E7A91C3D2B4406F8A1E7DE9 /* SSE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7DE8 /* SSE.swift */; };
 		5E7A91C3D2B4406F8A1E7DEB /* TextClip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7DEA /* TextClip.swift */; };
 		5E7A91C3D2B4406F8A1E7D03 /* SpokenText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7D02 /* SpokenText.swift */; };
+		5E7A91C3D2B4406F8A1E7F11 /* MediaProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7F10 /* MediaProgress.swift */; };
+		5E7A91C3D2B4406F8A1E7F13 /* MediaProgressView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F8A1E7F12 /* MediaProgressView.swift */; };
 		5E7A91C3D2B4406F08A68C86 /* OuterColumns.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406FC638332A /* OuterColumns.swift */; };
 		5E7A91C3D2B4406FA8BCBE8D /* ModelOrder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406FD808A807 /* ModelOrder.swift */; };
 		5E7A91C3D2B4406FF5DC17C5 /* DockMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A91C3D2B4406F81657ADF /* DockMemory.swift */; };
@@ -127,6 +129,8 @@
 		5E7A91C3D2B4406F8A1E7DE8 /* SSE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SSE.swift; path = JarvisCore/Sources/JarvisCore/SSE.swift; sourceTree = SOURCE_ROOT; };
 		5E7A91C3D2B4406F8A1E7DEA /* TextClip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TextClip.swift; path = JarvisCore/Sources/JarvisCore/TextClip.swift; sourceTree = SOURCE_ROOT; };
 		5E7A91C3D2B4406F8A1E7D02 /* SpokenText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SpokenText.swift; path = JarvisCore/Sources/JarvisCore/SpokenText.swift; sourceTree = SOURCE_ROOT; };
+		5E7A91C3D2B4406F8A1E7F10 /* MediaProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MediaProgress.swift; path = JarvisCore/Sources/JarvisCore/MediaProgress.swift; sourceTree = SOURCE_ROOT; };
+		5E7A91C3D2B4406F8A1E7F12 /* MediaProgressView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaProgressView.swift; sourceTree = "<group>"; };
 		5E7A91C3D2B4406FC638332A /* OuterColumns.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = OuterColumns.swift; path = JarvisCore/Sources/JarvisCore/OuterColumns.swift; sourceTree = SOURCE_ROOT; };
 		5E7A91C3D2B4406FD808A807 /* ModelOrder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ModelOrder.swift; path = JarvisCore/Sources/JarvisCore/ModelOrder.swift; sourceTree = SOURCE_ROOT; };
 		5E7A91C3D2B4406F81657ADF /* DockMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockMemory.swift; path = JarvisCore/Sources/JarvisCore/DockMemory.swift; sourceTree = SOURCE_ROOT; };
@@ -230,6 +234,7 @@
 				5E7A91C3D2B4406F8A1E7CD0 /* NativeWorks.swift */,
 				5E7A91C3D2B4406FFBFA89C0 /* ComposerAttachments.swift */,
 				5E7A91C3D2B4406FF71D4F52 /* VideoCover.swift */,
+				5E7A91C3D2B4406F8A1E7F12 /* MediaProgressView.swift */,
 				5E7A91C3D2B4406FC4287595 /* CallParts.swift */,
 				5E7A91C3D2B4406F3BB0146B /* SettingsPages.swift */,
 				5E7A91C3D2B4406FADF87E37 /* SettingsPieces.swift */,
@@ -249,6 +254,7 @@
 				5E7A91C3D2B4406F8A1E7DE8 /* SSE.swift */,
 				5E7A91C3D2B4406F8A1E7DEA /* TextClip.swift */,
 				5E7A91C3D2B4406F8A1E7D02 /* SpokenText.swift */,
+				5E7A91C3D2B4406F8A1E7F10 /* MediaProgress.swift */,
 				5E7A91C3D2B4406FC638332A /* OuterColumns.swift */,
 				5E7A91C3D2B4406FD808A807 /* ModelOrder.swift */,
 				5E7A91C3D2B4406F81657ADF /* DockMemory.swift */,
@@ -418,6 +424,7 @@
 				5E7A91C3D2B4406F8A1E7CD1 /* NativeWorks.swift in Sources */,
 				5E7A91C3D2B4406F0BAFFB54 /* ComposerAttachments.swift in Sources */,
 				5E7A91C3D2B4406FD9FD36F2 /* VideoCover.swift in Sources */,
+				5E7A91C3D2B4406F8A1E7F13 /* MediaProgressView.swift in Sources */,
 				5E7A91C3D2B4406F28A8E01D /* CallParts.swift in Sources */,
 				5E7A91C3D2B4406F7E2F0979 /* SettingsPages.swift in Sources */,
 				5E7A91C3D2B4406FBE9E2AB5 /* SettingsPieces.swift in Sources */,
@@ -437,6 +444,7 @@
 				5E7A91C3D2B4406F8A1E7DE9 /* SSE.swift in Sources */,
 				5E7A91C3D2B4406F8A1E7DEB /* TextClip.swift in Sources */,
 				5E7A91C3D2B4406F8A1E7D03 /* SpokenText.swift in Sources */,
+				5E7A91C3D2B4406F8A1E7F11 /* MediaProgress.swift in Sources */,
 				5E7A91C3D2B4406F08A68C86 /* OuterColumns.swift in Sources */,
 				5E7A91C3D2B4406FA8BCBE8D /* ModelOrder.swift in Sources */,
 				5E7A91C3D2B4406FF5DC17C5 /* DockMemory.swift in Sources */,
@@ -569,7 +577,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 45;
+				CURRENT_PROJECT_VERSION = 46;
 				MARKETING_VERSION = 0.4.6;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -750,7 +758,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 45;
+				CURRENT_PROJECT_VERSION = 46;
 				MARKETING_VERSION = 0.4.6;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -773,7 +781,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
-				CURRENT_PROJECT_VERSION = 45;
+				CURRENT_PROJECT_VERSION = 46;
 				MARKETING_VERSION = 0.4.6;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;

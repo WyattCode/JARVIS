@@ -61,6 +61,8 @@ struct CardRowButtonStyle: ButtonStyle {
 /// A row that names its value and opens a menu of the choices, with the up/down mark after it.
 struct PickRow: View {
   let title: String
+  /// A line under the title, as the switches have (a grey `footnote`).
+  var subtitle: String?
   let value: String
   let options: [(id: String, name: String)]
   let selected: String
@@ -76,7 +78,11 @@ struct PickRow: View {
     } label: {
       HStack(spacing: 8) {
         // The name keeps its room (a long model id as the value is cut in its middle, not the name pressed into a column of letters).
-        Text(title).font(.system(.callout)).foregroundStyle(Color(Palette.onSurface)).layoutPriority(1)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title).font(.system(.callout)).foregroundStyle(Color(Palette.onSurface))
+          if let subtitle { Text(subtitle).font(.footnote).foregroundStyle(Color(Palette.onSurfaceVariant)) }
+        }
+        .layoutPriority(1)
         Spacer(minLength: 12)
         Text(value).font(.system(.subheadline)).foregroundStyle(Color(Palette.onSurfaceVariant)).lineLimit(1).truncationMode(.middle)
         Image(systemName: "chevron.up.chevron.down").font(.system(.caption2, weight: .medium)).foregroundStyle(Color(Palette.onSurfaceVariant))

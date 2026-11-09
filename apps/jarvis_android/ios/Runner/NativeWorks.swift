@@ -16,6 +16,10 @@ struct WorksState: Codable {
     var pending: Bool
     var urls: [String]
     var highlight: Bool
+    /// The stage, the timeline of the run and how long each part is expected to take (for the running card).
+    var phase: String?
+    var track: MediaTrack?
+    var plan: MediaPlan?
   }
   var canCancel: Bool
   var tasks: [Work]
@@ -155,6 +159,27 @@ struct WorksView: View {
   }
 }
 
+/// The running (or stopped) part of a card: the same view the chat uses.
+private struct WorkProgress: UIViewRepresentable {
+  let work: WorksState.Work
+
+  func makeUIView(context: Context) -> MediaProgressView { MediaProgressView() }
+
+  func updateUIView(_ view: MediaProgressView, context: Context) {
+    view.update(
+      RowData.Task(
+        id: work.id, kind: work.kind, prompt: work.prompt, status: work.status, progress: work.progress, urls: [], error: work.error,
+        pending: work.pending, canCancel: true, phase: work.phase, track: work.track, plan: work.plan))
+  }
+
+  func sizeThatFits(_ proposal: ProposedViewSize, uiView: MediaProgressView, context: Context) -> CGSize? {
+    let width = proposal.width ?? 320
+    return uiView.systemLayoutSizeFitting(
+      CGSize(width: width, height: UIView.layoutFittingCompressedSize.height), withHorizontalFittingPriority: .required,
+      verticalFittingPriority: .fittingSizeLevel)
+  }
+}
+
 private struct WorkCard: View {
   @ObservedObject var store: WorksStore
   let work: WorksState.Work
@@ -168,22 +193,15 @@ private struct WorkCard: View {
         }
       }
       VStack(alignment: .leading, spacing: 8) {
-        Text(work.prompt.isEmpty ? (work.kind == "video" ? "视频任务" : "图片任务") : work.prompt)
-          .font(.system(size: 14)).foregroundStyle(Color(Palette.onSurface)).lineLimit(3)
-        if work.pending {
-          if work.progress > 0 {
-            ProgressView(value: min(max(work.progress / 100, 0), 1))
-          } else {
-            ProgressView().progressViewStyle(.linear)
-          }
-          Text("后台生成中\(work.progress > 0 ? " · \(Int(work.progress.rounded()))%" : "")，可以继续对话")
-            .font(.system(.caption)).foregroundStyle(Color(Palette.onSurfaceVariant))
+        // The prompt is not written out: "复制提示词" below has it.
+        if work.pending || work.status == "interrupted" {
+          WorkProgress(work: work)
         }
-        if let error = work.error, !error.isEmpty {
+        if let error = work.error, !error.isEmpty, work.status != "interrupted" {
           Text(error).font(.system(size: 14)).foregroundStyle(Color(Palette.error))
         }
       }
-      .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 8)
+      .padding(.horizontal, 16).padding(.top, work.status == "completed" && work.error == nil ? 0 : 12).padding(.bottom, work.status == "completed" && work.error == nil ? 0 : 8)
       actions
         .padding(.horizontal, 8).padding(.bottom, 8)
     }

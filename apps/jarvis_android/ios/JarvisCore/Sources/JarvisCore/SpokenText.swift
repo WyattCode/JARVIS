@@ -15,6 +15,15 @@ public struct SpokenText: Equatable {
   public let clusters: [Range<Int>]
   /// Time before each character and in all, in units of one spoken Chinese character (`cumulative.count == clusters.count + 1`).
   private let cumulative: [Double]
+  /// The places where the words make the voice rest at the end of a sentence or line: the unit before the pause and its length.
+  private let pauses: [Pause]
+
+  struct Pause: Equatable {
+    var at: Double
+    var units: Double
+    /// The end of a sentence or line (the rest the sound is set by); a comma's pause only keeps the rests that belong to it away.
+    var sentenceEnd: Bool { units >= 2 }
+  }
 
   /// Seconds one unit takes when nothing better is known (measured on the service's voice: 0.186 to 0.192).
   public static let defaultPace = 0.19
@@ -72,6 +81,9 @@ public struct SpokenText: Equatable {
     }
     self.clusters = clusters
     self.cumulative = cumulative
+    var pauses: [Pause] = []
+    for i in clusters.indices where cumulative[i + 1] - cumulative[i] >= 1.2 { pauses.append(Pause(at: cumulative[i], units: cumulative[i + 1] - cumulative[i])) }
+    self.pauses = pauses
   }
 
   public var isEmpty: Bool { clusters.isEmpty }
@@ -92,6 +104,113 @@ public struct SpokenText: Equatable {
     }
     let width = cumulative[low + 1] - cumulative[low]
     return Double(low) + (width > 0 ? (units - cumulative[low]) / width : 0)
+  }
+
+  /// Where the voice is `seconds` into the reply, given the rests the sound really has (see `SoundRests`). The words only
+  /// estimate when the voice pauses between sentences; the sound says when it did. Each sentence end the words predict is set
+  /// against the real rest nearest to it, and the time between two such rests is laid out evenly between them: an estimate that
+  /// is a little fast or slow in one sentence is put right at its end instead of carrying on into the next. Without any rest
+  /// found (or none that fits) this is `position(at:pace:)`.
+  public func position(at seconds: Double, pace: Double, rests: [SoundRests.Rest]) -> Double? {
+    guard !clusters.isEmpty, pace > 0, seconds.isFinite else { return nil }
+    let anchors = Self.anchors(pauses: pauses, pace: pace, rests: rests)
+    guard !anchors.isEmpty else { return position(at: seconds, pace: pace) }
+    return position(at: Self.wordTime(forSoundTime: max(0, seconds), anchors: anchors), pace: pace)
+  }
+
+  /// How many of the reply's sentence ends were set against a rest of the sound, and how many there are (for the trace).
+  public func alignedPauses(pace: Double, rests: [SoundRests.Rest]) -> (matched: Int, of: Int) {
+    (Self.anchors(pauses: pauses, pace: pace, rests: rests).count / 2, pauses.filter(\.sentenceEnd).count)
+  }
+
+  /// A rest shorter than this is a breath, not the pause at the end of a sentence.
+  static let shortestSentenceRest = 0.3
+  /// A rest is taken for the end of a sentence only when it is within this many seconds of where the words put it, counted from
+  /// the place of the last one found (so a voice that runs a little slow does not lose the thread).
+  static let restReach = 1.2
+  /// Between two rests found, the sound may take at most this many times (or at least this fraction of) the time the words give.
+  static let stretch = 0.6...1.6
+
+  /// Pairs of (time by the words, time in the sound): the start and the end of every rest that fits a sentence end.
+  struct Anchor: Equatable {
+    var words: Double
+    var sound: Double
+  }
+
+  static func anchors(pauses: [Pause], pace: Double, rests: [SoundRests.Rest]) -> [Anchor] {
+    var found: [Anchor] = []
+    var next = 0
+    // How much longer or shorter the sound takes than the words say (a voice a little off the pace the words were laid out
+    // with), from the rests found so far: where the next rest is expected is worked out with it.
+    var scale = 1.0
+    func expected(_ pause: Pause) -> Double {
+      let start = pause.at * pace
+      guard let last = found.last else { return start }
+      return last.sound + (start - last.words) * scale
+    }
+    for (k, pause) in pauses.enumerated() where pause.sentenceEnd {
+      let start = pause.at * pace
+      let length = pause.units * pace
+      let target = expected(pause)
+      // The pauses at commas before and after this one: a rest nearer to one of those than to this sentence end is theirs.
+      var neighbours: [Double] = []
+      if k > 0, !pauses[k - 1].sentenceEnd { neighbours.append(expected(pauses[k - 1])) }
+      if k + 1 < pauses.count, !pauses[k + 1].sentenceEnd { neighbours.append(expected(pauses[k + 1])) }
+      var best: (score: Double, index: Int)?
+      var index = next
+      while index < rests.count {
+        let rest = rests[index]
+        if rest.at > target + Self.restReach { break }
+        index += 1
+        guard rest.length >= Self.shortestSentenceRest else { continue }
+        let off = abs(rest.at - target)
+        guard off <= Self.restReach else { continue }
+        if neighbours.contains(where: { abs(rest.at - $0) + 0.1 < off }) { continue }
+        // Rests that cannot follow the last one found (or the start of the reply, for the first), at a believable speed, are not
+        // it: the silence at the very start of the sound is not the end of a short first sentence.
+        let last = found.last ?? Anchor(words: 0, sound: 0)
+        let sound = rest.at - last.sound
+        let words = start - last.words
+        guard sound > 0, words > 0, Self.stretch.contains(words / sound) else { continue }
+        let score = off + 1.5 * abs(rest.length - length)
+        if best == nil || score < best!.score { best = (score, index - 1) }
+      }
+      guard let choice = best else { continue }
+      let rest = rests[choice.index]
+      found.append(Anchor(words: start, sound: rest.at))
+      found.append(Anchor(words: start + length, sound: rest.at + rest.length))
+      scale = Self.scale(of: found)
+      next = choice.index + 1
+    }
+    return found
+  }
+
+  /// How much longer (above 1) or shorter the sound takes than the words say, counted from the start of the reply to the last
+  /// rest found. (Counting only from the first rest found was tried: a voice that is slow through the middle of a reply and
+  /// quick at the end made it pick a comma's rest for a sentence end, and the error went from 0.07 s to 0.5 s; counting from the
+  /// start did not, at paces anywhere from 12% under to 12% over.)
+  static func scale(of anchors: [Anchor]) -> Double {
+    guard let last = anchors.last, last.words > 0 else { return 1 }
+    return min(max(last.sound / last.words, 0.85), 1.2)
+  }
+
+  /// The time by the words for a time in the sound: straight lines between the anchors, and one to one before the first and
+  /// after the last.
+  static func wordTime(forSoundTime t: Double, anchors: [Anchor]) -> Double {
+    guard let first = anchors.first, let last = anchors.last else { return t }
+    if t <= first.sound { return first.sound > 0 ? t * first.words / first.sound : t }
+    if t >= last.sound { return last.words + (t - last.sound) / scale(of: anchors) }
+    var low = 0
+    var high = anchors.count - 1
+    while high - low > 1 {
+      let mid = (low + high) / 2
+      if anchors[mid].sound <= t { low = mid } else { high = mid }
+    }
+    let a = anchors[low]
+    let b = anchors[high]
+    let span = b.sound - a.sound
+    guard span > 0 else { return a.words }
+    return a.words + (t - a.sound) * (b.words - a.words) / span
   }
 
   /// Where the words make the voice rest at the end of a sentence (or line): seconds into the sound from where the rest begins,
@@ -279,13 +398,16 @@ public struct SpeechProgress: Equatable {
   public var live: Bool
   /// The reply was cut off, and `played` is where.
   public var cut: Bool
+  /// The rests found in the sound that has arrived (see `SoundRests`): they put the words right at the end of each sentence.
+  public var rests: [SoundRests.Rest]
 
-  public init(played: Double, total: Double?, pace: Double, live: Bool, cut: Bool) {
+  public init(played: Double, total: Double?, pace: Double, live: Bool, cut: Bool, rests: [SoundRests.Rest] = []) {
     self.played = played
     self.total = total
     self.pace = pace
     self.live = live
     self.cut = cut
+    self.rests = rests
   }
 
   /// The eye is on a word a moment before it is said, and the lit edge is drawn a few characters behind its front: so the edge
@@ -296,7 +418,7 @@ public struct SpeechProgress: Equatable {
   /// How many characters of `text` the voice has said, nil when the reply is not being followed any more (it was said to the end).
   public func position(in text: SpokenText) -> Double? {
     guard live || cut else { return nil }
-    return text.position(at: played + Self.lead, pace: total.map { text.pace(forTotal: $0) } ?? pace)
+    return text.position(at: played + Self.lead, pace: total.map { text.pace(forTotal: $0) } ?? pace, rests: rests)
   }
 }
 
