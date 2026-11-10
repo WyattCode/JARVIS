@@ -197,7 +197,7 @@ public enum MediaProgress {
   }
 
   public static func quietMessage(_ seconds: Double) -> String {
-    "服务器 \(max(Int((seconds / 60).rounded()), 1)) 分钟没有新进展，任务可能卡住了，重试会重新提交"
+    MediaCopy.timedOut
   }
 
   /// "12 秒", "3 分钟": how long nothing has been heard.
@@ -283,10 +283,39 @@ public enum MediaProgress {
 
   public static func label(_ stage: MediaStage, kind: String) -> String {
     switch stage {
-    case .waiting: return "排队中"
-    case .preparing: return kind == "video" ? "准备模型与画面" : "准备模型"
-    case .working: return kind == "video" ? "生成视频中" : "生成图片中"
-    case .finishing: return "收尾保存中"
+    case .waiting: return "正在等待…"
+    case .preparing: return "正在准备…"
+    case .working: return kind == "video" ? "正在生成视频" : "正在生成图像"
+    case .finishing: return "正在下载…"
     }
+  }
+}
+
+/// What the cards say when a picture or video did not come. The wording follows the system's own apps: what could not be
+/// done ("未能生成图像"), then one short sentence on what to do; never the inner cause, never the server.
+public enum MediaCopy {
+  public static func noun(_ kind: String) -> String { kind == "video" ? "视频" : "图像" }
+  public static func failedTitle(_ kind: String) -> String { "未能生成" + noun(kind) }
+  public static func cancelledTitle(_ kind: String) -> String { noun(kind) + "生成已取消" }
+  public static func unavailable(_ kind: String) -> String { noun(kind) + "生成不可用" }
+  public static func failed(_ kind: String) -> String { failedTitle(kind) + "。请重试。" }
+  public static func nothing(_ kind: String) -> String { "未生成" + noun(kind) + "。请重试。" }
+  public static let retry = "请重试。"
+  public static let timedOut = "请求超时。请重试。"
+  public static let network = "请检查互联网连接，然后重试。"
+  public static let signIn = "登录以继续"
+  /// The mark of a run the person stopped (kept as it was stored by earlier versions).
+  public static let cancelled = "已取消"
+
+  /// What is shown for a stored reason: the ones earlier versions wrote are put in today's words.
+  public static func shown(_ error: String?, kind: String) -> String? {
+    guard let error, !error.isEmpty else { return nil }
+    if error.contains("已退出登录") { return signIn }
+    if error.contains("没有新进展") || error.contains("等待时间过长") || error.contains("仍未完成") { return timedOut }
+    if error.contains("暂时无法检查") { return network }
+    if error.contains("没有返回作品") || error.contains("未返回作品") { return nothing(kind) }
+    if error.contains("不支持此任务") { return unavailable(kind) }
+    if error.contains("生成失败") || error.contains("应用退出时") { return failed(kind) }
+    return error
   }
 }

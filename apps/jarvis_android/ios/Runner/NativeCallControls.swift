@@ -110,11 +110,12 @@ private final class TalkButton: UIControl {
       }
       setNeedsLayout()
       restyle(animated: false)
+      updateSpin()
     }
   }
   /// The see-through round button of the Duo layout: system glass, the hand-free / held state drawn over it.
   private let glassView = UIVisualEffectView(effect: nil)
-  var held = false { didSet { if held != oldValue { restyle(animated: true) } } }
+  var held = false { didSet { if held != oldValue { restyle(animated: true); updateSpin() } } }
   var muted = false { didSet { if muted != oldValue { restyle(animated: true) } } }
   /// JARVIS is saying a reply and the button is not held: the microphone turns into a stop key (a square) with a ring that fills
   /// as the voice goes through the words. A tap stops the reply; a hold still talks over it.
@@ -123,8 +124,22 @@ private final class TalkButton: UIControl {
       guard stopMode != oldValue else { return }
       restyle(animated: true)
       updateRing()
+      updateSpin()
     }
   }
+  /// The reply is held where it is (a tap on the page): the stop key shows "go on" and its ring is dim.
+  var paused = false {
+    didSet {
+      guard paused != oldValue else { return }
+      restyle(animated: true)
+      updateRing()
+    }
+  }
+  /// JARVIS is working on its answer: a short arc goes round the button's edge.
+  var thinking = false { didSet { if thinking != oldValue { updateSpin() } } }
+  /// The held words will be thrown away if the finger lets go now: the lit button goes grey.
+  var cancelling = false { didSet { if cancelling != oldValue { restyle(animated: true) } } }
+  private let spinArc = CAShapeLayer()
   /// How far through the words the voice is, 0...1: the ring.
   var progress: Double = 0 {
     didSet {
@@ -192,6 +207,14 @@ private final class TalkButton: UIControl {
     ringArc.strokeColor = TalkButton.energy.cgColor
     ringArc.strokeEnd = 0
     layer.addSublayer(ringArc)
+    spinArc.fillColor = UIColor.clear.cgColor
+    spinArc.lineWidth = 2.5
+    spinArc.lineCap = .round
+    spinArc.opacity = 0
+    spinArc.strokeColor = TalkButton.energy.cgColor
+    spinArc.strokeStart = 0
+    spinArc.strokeEnd = 0.22
+    layer.addSublayer(spinArc)
     isAccessibilityElement = true
     accessibilityTraits = .button
     restyle(animated: false)
@@ -225,11 +248,52 @@ private final class TalkButton: UIControl {
     CATransaction.setDisableActions(true)
     ringArc.frame = bounds
     ringArc.path = path.cgPath
+    spinArc.frame = bounds
+    let r = min(bounds.width, bounds.height) / 2 - 1.5
+    spinArc.path = UIBezierPath(arcCenter: CGPoint(x: bounds.midX, y: bounds.midY), radius: r, startAngle: -.pi / 2, endAngle: 3 * .pi / 2, clockwise: true).cgPath
     CATransaction.commit()
   }
 
+  /// The thinking arc, on the round button only (the long one has its words).
+  private func updateSpin() {
+    let on = thinking && circular && !stopMode && !held
+    let visible: Float = on ? 1 : 0
+    if on, spinArc.animation(forKey: "spin") == nil {
+      if UIAccessibility.isReduceMotionEnabled {
+        spinArc.strokeEnd = 1
+        let breathe = CABasicAnimation(keyPath: "opacity")
+        breathe.fromValue = 0.3
+        breathe.toValue = 1
+        breathe.duration = 0.9
+        breathe.autoreverses = true
+        breathe.repeatCount = .infinity
+        breathe.isRemovedOnCompletion = false
+        spinArc.add(breathe, forKey: "spin")
+      } else {
+        spinArc.strokeEnd = 0.22
+        let turn = CABasicAnimation(keyPath: "transform.rotation.z")
+        turn.fromValue = 0
+        turn.toValue = 2 * Double.pi
+        turn.duration = 1.1
+        turn.repeatCount = .infinity
+        // (Kept when the app goes away and comes back.)
+        turn.isRemovedOnCompletion = false
+        spinArc.add(turn, forKey: "spin")
+      }
+    } else if !on {
+      spinArc.removeAnimation(forKey: "spin")
+    }
+    guard spinArc.opacity != visible else { return }
+    let fade = CABasicAnimation(keyPath: "opacity")
+    fade.fromValue = spinArc.presentation()?.opacity ?? spinArc.opacity
+    fade.toValue = visible
+    fade.duration = 0.2
+    spinArc.opacity = visible
+    if window != nil { spinArc.add(fade, forKey: "fade") }
+  }
+
   private func updateRing() {
-    let visible: Float = stopMode ? 1 : 0
+    let visible: Float = stopMode ? (paused ? 0.35 : 1) : 0
     guard ringArc.opacity != visible else { return }
     if UIAccessibility.isReduceMotionEnabled || window == nil {
       ringArc.opacity = visible
@@ -246,18 +310,18 @@ private final class TalkButton: UIControl {
 
   func restyle(animated: Bool) {
     let mutedLook = muted && !stopMode
-    let colour: UIColor = held ? TalkButton.ink : mutedLook ? Palette.error : Palette.onSurface
+    let colour: UIColor = held ? (cancelling ? Palette.onSurfaceVariant : TalkButton.ink) : mutedLook ? Palette.error : Palette.onSurface
     let apply = {
       self.backgroundColor = self.circular ? .clear : Palette.containerHigh
       self.fill.colors = [
         UIColor.white.withAlphaComponent(0.2).blended(with: TalkButton.energy).cgColor, TalkButton.energy.cgColor,
         UIColor(red: 0.25, green: 0.56, blue: 0.67, alpha: 1).blended(with: TalkButton.energy, 0.88).cgColor,
       ]
-      self.fill.opacity = self.held ? 1 : 0
+      self.fill.opacity = self.held ? (self.cancelling ? 0.28 : 1) : 0
       self.layer.borderColor = (self.held ? TalkButton.energy.withAlphaComponent(0.5) : mutedLook ? Palette.error : Palette.outlineVariant).resolvedColor(with: self.traitCollection).cgColor
       self.layer.borderWidth = self.circular && !self.held && !mutedLook ? 0 : (mutedLook && !self.held ? 2 : 1)
       self.layer.shadowColor = TalkButton.energy.cgColor
-      self.layer.shadowOpacity = self.held ? 0.34 : 0
+      self.layer.shadowOpacity = self.held && !self.cancelling ? 0.34 : 0
       self.layer.shadowRadius = 11
       self.layer.shadowOffset = .zero
       self.transform = self.held ? CGAffineTransform(scaleX: 0.96, y: 0.96) : .identity
@@ -274,7 +338,7 @@ private final class TalkButton: UIControl {
         self.listening.isHidden = !bars
       }
     }
-    let name = stopMode ? "stop.fill" : circular ? "mic.fill" : (muted ? "mic.slash" : held ? "mic.fill" : "mic")
+    let name = stopMode ? (paused ? "play.fill" : "stop.fill") : circular ? "mic.fill" : (muted ? "mic.slash" : held ? "mic.fill" : "mic")
     let size: CGFloat = stopMode ? (circular ? 18 : 15) : (circular ? 30 : 20)
     if let image = UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: size, weight: .regular)) {
       if animated, window != nil, !icon.isHidden, icon.image != nil, !UIAccessibility.isReduceMotionEnabled {
@@ -430,12 +494,15 @@ final class NativeCallControls: NSObject {
     talk.listeningNow = circular && !ptt && ready && !talk.stopMode && !(a["muted"] as? Bool ?? talk.muted)
     talk.muted = a["muted"] as? Bool ?? talk.muted
     talk.held = held
+    talk.paused = (a["paused"] as? Bool ?? talk.paused) && talk.stopMode
+    talk.thinking = a["thinking"] as? Bool ?? talk.thinking
+    talk.cancelling = (a["cancelling"] as? Bool ?? talk.cancelling) && held
     let label = a["label"] as? String ?? ""
     talk.title.text = label
     if talk.stopMode {
-      talk.accessibilityLabel = "停止朗读"
+      talk.accessibilityLabel = talk.paused ? "继续朗读" : "停止朗读"
       talk.accessibilityValue = nil
-      talk.accessibilityHint = ptt ? "点按停止，长按说话" : nil
+      talk.accessibilityHint = ptt ? (talk.paused ? "点按继续，长按说话" : "点按停止，长按说话") : nil
     } else {
       talk.accessibilityLabel = !ptt && ready ? (talk.muted ? "取消静音" : "静音") : label
       talk.accessibilityValue = !ptt && ready ? label : nil
@@ -482,13 +549,13 @@ final class NativeCallControls: NSObject {
       // A tap: stop the reply (if it is still being said).
       work.cancel()
       pendingHold = nil
-      if talk.stopMode { emit("stop", nil) }
+      if talk.stopMode { emit(talk.paused ? "resume" : "stop", nil) }
     } else if holdStarted {
       holdStarted = false
       emit("up", nil)
     } else if talk.stopMode {
       // An activation without a touch down (VoiceOver's double tap): it is the tap of the stop key.
-      emit("stop", nil)
+      emit(talk.paused ? "resume" : "stop", nil)
     }
   }
 
@@ -514,5 +581,18 @@ final class NativeCallControls: NSObject {
     }
   }
 
-  @objc private func tapped() { if !ptt { emit(talk.stopMode ? "stop" : "mute", nil) } }
+  @objc private func tapped() { if !ptt { emit(talk.stopMode ? (talk.paused ? "resume" : "stop") : "mute", nil) } }
+
+  /// The middle of the talk button, in another view's coordinates.
+  func talkCentre(in view: UIView) -> CGPoint { talk.convert(CGPoint(x: talk.bounds.midX, y: talk.bounds.midY), to: view) }
+
+  /// A short press down and back: the button was called and is already there.
+  func nudge() {
+    guard !UIAccessibility.isReduceMotionEnabled else { return }
+    UIView.animate(withDuration: 0.09, delay: 0, options: [.curveEaseOut, .allowUserInteraction, .beginFromCurrentState]) {
+      self.root.transform = CGAffineTransform(scaleX: 0.96, y: 0.96)
+    } completion: { _ in
+      UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseOut, .allowUserInteraction, .beginFromCurrentState]) { self.root.transform = .identity }
+    }
+  }
 }

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Everything the app keeps on the device, as the Flutter app's saved file shaped it (`version` 1).
@@ -125,5 +126,33 @@ public func orphanedBlobs(stored: [String], conversations: [Conversation], held:
     for a in c.pendingAttachments { keep.insert(a.id) }
     for m in c.messages { for a in m.attachments { keep.insert(a.id) } }
   }
+  keep.formUnion(MediaKeep.referenced(conversations))
   return stored.filter { !keep.contains($0) }
+}
+
+/// The pictures and videos the service made are kept on the device (in the vault, as the attachments are), so that a work
+/// can be seen whenever the app is opened, whether or not the server can be reached or still has the file.
+public enum MediaKeep {
+  /// The vault's name for a file of the service (`/v1/files/...`, `/v1/videos/...`); nil for any other address.
+  public static func id(_ address: String) -> String? {
+    let path = URL(string: address)?.path ?? address
+    guard path.hasPrefix("/v1/files/") || path.hasPrefix("/v1/videos/") else { return nil }
+    return "m-" + SHA256.hash(data: Data(path.utf8)).map { String(format: "%02x", $0) }.joined()
+  }
+
+  /// Every kept file the conversations still show: the works that are finished, and the service's files named in what was said.
+  public static func referenced(_ conversations: [Conversation]) -> Set<String> {
+    var ids: Set<String> = []
+    let pattern = try? NSRegularExpression(pattern: "/v1/(?:files|videos)/[A-Za-z0-9._~%/-]+")
+    for c in conversations {
+      for t in c.tasks where t.status == "completed" { for u in t.urls { if let id = id(u) { ids.insert(id) } } }
+      for m in c.messages where m.text.contains("/v1/") {
+        let text = m.text as NSString
+        for hit in pattern?.matches(in: m.text, range: NSRange(location: 0, length: text.length)) ?? [] {
+          if let id = id(text.substring(with: hit.range)) { ids.insert(id) }
+        }
+      }
+    }
+    return ids
+  }
 }

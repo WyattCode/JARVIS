@@ -78,6 +78,8 @@ public struct MediaTask: Codable, Equatable, Sendable {
   }
 
   public var pending: Bool { status == "queued" || status == "in_progress" }
+  /// Cleared by the person: the card stays where it was and says so, the work itself is gone.
+  public var removed: Bool { status == "removed" }
 
   /// What the model is told about a task that is not finished or is history.
   public var receipt: [String: JSONValue] {

@@ -375,7 +375,7 @@ final class WorksAutoPop {
 @MainActor
 final class WorksSheet {
   private let store: JarvisStore
-  private let model: WorksStore
+  fileprivate let model: WorksStore
   private var bag = Set<AnyCancellable>()
 
   static func present(store: JarvisStore, from presenter: UIViewController) {
@@ -398,7 +398,7 @@ final class WorksSheet {
   private init(store: JarvisStore) {
     self.store = store
     model = WorksStore(state: WorksSheet.state(store))
-    VideoCover.load = { [store] address, file in try await store.api.download(address, to: file) }
+    VideoCover.load = { [store] address, file in try await store.mediaFile(address, to: file) }
     VideoCover.normalize = { [store] address in (try? store.api.mediaURL(address))?.absoluteString ?? address }
     model.transport = { [weak self] message, answer in
       guard let self else { return answer(nil) }
@@ -407,7 +407,7 @@ final class WorksSheet {
     model.fetch = { [store] url, answer in
       // The service may name its files with another host or scheme than the one it is reached by: the API rewrites those of its own
       // paths to this server and sends the session only there, so no check of the origin is made here.
-      Task { answer(try? await store.api.download(url)) }
+      Task { answer(try? await store.mediaData(url)) }
     }
     store.objectWillChange.receive(on: DispatchQueue.main).sink { [weak self] _ in
       DispatchQueue.main.async { self?.refresh() }
@@ -415,7 +415,7 @@ final class WorksSheet {
   }
 
   private static func state(_ store: JarvisStore) -> WorksState {
-    let tasks = store.conversations.flatMap { $0.tasks.reversed() }
+    let tasks = store.conversations.flatMap { $0.tasks.reversed() }.filter { !$0.removed }
     return WorksState(
       canCancel: true,
       tasks: tasks.map {
@@ -433,6 +433,7 @@ final class WorksSheet {
   private func act(_ message: [String: Any]) async -> [String: Any]? {
     guard let id = message["id"] as? String else { return nil }
     switch message["a"] as? String {
+    case "clearAll": store.clearWorks()
     case "cancel": if let o = owner(of: id) { store.cancelMediaTask(o, id) }
     case "retry": if let o = owner(of: id) { await store.retryMedia(o, id) }
     case "settings": await withCheckedContinuation { c in FilesService.shared.openAppSettings { _ in c.resume() } }
@@ -456,7 +457,7 @@ final class WorksSheet {
           _ = try await FilesService.shared.saveToPhotos(
             FileSource(name: "jarvis-\(id)\(suffix).mp4", bytes: nil, path: file.path), mime: "video/mp4")
         } else {
-          let data = try await store.api.download(url)
+          let data = try await store.mediaData(url)
           let kind = Self.sniff(data, task.kind)
           _ = try await FilesService.shared.saveToPhotos(
             FileSource(name: "jarvis-\(id)\(suffix).\(kind.ext)", bytes: data, path: nil), mime: kind.mime)
@@ -493,6 +494,12 @@ final class WorksSheetHost: UIHostingController<WorksView> {
   override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .all }
 
   var sheet: WorksSheet?
+
+  override func viewDidLayoutSubviews() {
+    super.viewDidLayoutSubviews()
+    let strip = hasVerticalBar(view.window?.traitCollection ?? traitCollection)
+    if sheet?.model.strip != strip { sheet?.model.strip = strip }
+  }
 }
 
 

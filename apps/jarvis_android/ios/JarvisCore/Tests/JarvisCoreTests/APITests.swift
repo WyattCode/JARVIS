@@ -256,7 +256,7 @@ final class APITests: XCTestCase {
   func testAFailedVideoSaysSo() async throws {
     StubProtocol.handler = { _, _ in .init(chunks: [Data(#"{"id":"v","status":"failed"}"#.utf8)]) }
     do { _ = try await api().generate(requestId: "g", kind: "video", args: ["prompt": .string("x")]); XCTFail() } catch {
-      XCTAssertEqual((error as? JarvisException)?.message, "视频生成失败，请检查原任务")
+      XCTAssertEqual((error as? JarvisException)?.message, "未能生成视频。请重试。")
     }
   }
 
@@ -384,7 +384,7 @@ extension APITests {
     let api = try api()
     api.pollInterval = 0.01
     do { _ = try await api.generate(requestId: "g", kind: "image", args: ["prompt": .string("x")]); XCTFail() } catch {
-      XCTAssertEqual((error as? JarvisException)?.message, "图片生成失败，请检查原任务")
+      XCTAssertEqual((error as? JarvisException)?.message, "未能生成图像。请重试。")
     }
     XCTAssertEqual(polls, 2)
   }
@@ -400,7 +400,7 @@ extension APITests {
     do { _ = try await api.generate(requestId: "g", kind: "image", args: ["prompt": .string("x")]); XCTFail() } catch {
       let e = error as? JarvisException
       XCTAssertEqual(e?.stalled, true)
-      XCTAssertTrue(e?.message.contains("没有新进展") == true)
+      XCTAssertTrue(e?.message == MediaCopy.timedOut)
     }
   }
 

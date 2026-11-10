@@ -308,7 +308,7 @@ import UIKit
           Self.running(MediaTask(id: "t4", kind: "image", prompt: "山间小路", status: "in_progress", progress: 51), ago: 200, step: 195, last: 130),
           {
             var t = Self.running(MediaTask(id: "t5", kind: "image", prompt: "雪夜的城市", status: "interrupted", progress: 51), ago: 41, step: 30, last: 20)
-            t.error = "应用退出时任务没做完"
+            t.error = MediaCopy.timedOut
             return t
           }(),
         ]

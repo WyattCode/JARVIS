@@ -65,7 +65,12 @@ final class FakeTransport: Transport, @unchecked Sendable {
       continuation.onTermination = { _ in task.cancel() }
     }
   }
-  func download(_ path: String) async throws -> Data { Data() }
+  var files: [String: Data] = [:]
+  func download(_ path: String) async throws -> Data {
+    if files.isEmpty && !path.contains("/v1/files/k") { return Data() }
+    guard let data = files[URL(string: path)?.path ?? path] else { throw JarvisException("无法获取") }
+    return data
+  }
   func download(_ path: String, to file: URL) async throws -> Int { 0 }
   func toolsStatus() async throws -> [String: JSONValue] { ["data": .array([])] }
   func cancel(_ requestId: String) { lock.lock(); cancelled.append(requestId); lock.unlock() }
@@ -566,7 +571,7 @@ final class StoreTests: XCTestCase {
     for _ in 0..<150 where store.current.tasks.first?.status != "interrupted" { try await Task.sleep(nanoseconds: 20_000_000) }
     let task = store.current.tasks[0]
     XCTAssertEqual(task.status, "interrupted")
-    XCTAssertTrue(task.error?.contains("没有新进展") == true)
+    XCTAssertTrue(task.error == MediaCopy.timedOut)
     XCTAssertNil(task.jobId, "a stuck job is not followed again")
     XCTAssertEqual(task.source, "http")
     XCTAssertEqual(task.progress, 51)
@@ -586,5 +591,83 @@ final class StoreTests: XCTestCase {
     await store.retryMedia(owner, id)
     XCTAssertNil(store.current.tasks[0].error)
     XCTAssertEqual(store.current.tasks[0].status, "completed")
+  }
+
+  func testClearingTheWorksEmptiesTheListAndTheChatsAndStopsWhatRuns() async throws {
+    await signedIn()
+    api.generateDelay = 5
+    store.startMedia(kind: "image", prompt: "慢")
+    for _ in 0..<50 where store.current.tasks.first?.status != "in_progress" { try await Task.sleep(nanoseconds: 20_000_000) }
+    let owner = store.current.id
+    store.update(owner) { c in
+      c.tasks.append(MediaTask(id: "done", kind: "image", prompt: "猫", callId: "call-1", status: "completed", urls: ["/v1/files/c.png"], progress: 100))
+      var call = ChatMessage("assistant", "")
+      call.calls = [ToolCall(id: "call-1", name: "generate_image", arguments: "{}")]
+      c.messages.append(call)
+      c.messages.append(ChatMessage("tool", "猫", taskId: "done"))
+      c.messages.append(ChatMessage("assistant", "好了"))
+    }
+    XCTAssertEqual(store.worksCount.all, 2)
+    XCTAssertEqual(store.worksCount.running, 1)
+    XCTAssertFalse(store.canDeleteConversation(owner))
+    XCTAssertEqual(store.clearWorks(), 2)
+    XCTAssertTrue(store.current.tasks.allSatisfy { $0.removed && $0.urls.isEmpty }, "each card stays and says it was removed")
+    XCTAssertEqual(store.current.messages.filter { $0.taskId != nil }.count, 2, "the cards keep their places in the chat")
+    XCTAssertEqual(store.current.messages.last?.text, "好了", "what was said stays")
+    XCTAssertEqual(api.cancelled.count, 1, "the running one was stopped")
+    XCTAssertTrue(store.canDeleteConversation(owner))
+    XCTAssertEqual(store.worksCount.all, 0)
+    XCTAssertEqual(store.clearWorks(), 0)
+  }
+
+  func testALateVoiceEventDoesNotBringAClearedWorkBack() async throws {
+    await signedIn()
+    store.voicePollInterval = 0.01
+    api.jobs = [["status": .string("in_progress"), "progress": JSONValue.number(30)]]
+    let owner = store.current.id
+    store.voiceTask(owner, ["type": .string("call"), "name": .string("generate_image"), "call_id": .string("vx"), "arguments": .string("{\"prompt\":\"海\"}")])
+    store.voiceTask(owner, ["type": .string("localrouter.job.created"), "call_id": .string("vx"), "job_id": .string("jx")])
+    XCTAssertEqual(store.clearWorks(), 1)
+    store.voiceTask(owner, ["type": .string("localrouter.job.done"), "call_id": .string("vx"), "job_id": .string("jx"), "status": .string("completed"), "urls": .array([.string("/v1/files/x.png")])])
+    store.voiceTask(owner, ["type": .string("localrouter.job.done"), "job_id": .string("jx"), "status": .string("completed")])
+    XCTAssertEqual(store.current.tasks.count, 1)
+    XCTAssertTrue(store.current.tasks[0].removed, "it stays removed")
+    store.voiceTask(owner, ["type": .string("call"), "name": .string("generate_image"), "call_id": .string("vy"), "arguments": .string("{\"prompt\":\"山\"}")])
+    XCTAssertEqual(store.worksCount.all, 1, "a new work is made as before")
+  }
+
+  func testAFinishedWorkIsKeptOnTheDeviceAndGoesWhenCleared() async throws {
+    await signedIn()
+    api.files = ["/v1/files/k.png": Data([1, 2, 3])]
+    let owner = store.current.id
+    store.update(owner) { $0.tasks.append(MediaTask(id: "k", kind: "image", prompt: "猫", status: "completed", urls: ["https://other.host/v1/files/k.png"], progress: 100)) }
+    let id = try XCTUnwrap(MediaKeep.id("/v1/files/k.png"))
+    XCTAssertEqual(MediaKeep.id("https://other.host/v1/files/k.png"), id, "the same file whatever host names it")
+    let first = try await store.mediaData("https://other.host/v1/files/k.png")
+    XCTAssertEqual(first, Data([1, 2, 3]))
+    XCTAssertEqual(try vault.readBlob(id), Data([1, 2, 3]))
+    // The server is gone: the work is still there.
+    api.files = [:]
+    let again = try await store.mediaData("/v1/files/k.png")
+    XCTAssertEqual(again, Data([1, 2, 3]))
+    XCTAssertTrue(orphanedBlobs(stored: [id], conversations: store.conversations).isEmpty)
+    XCTAssertEqual(store.clearWorks(), 1)
+    XCTAssertEqual(orphanedBlobs(stored: [id], conversations: store.conversations), [id], "cleared: the copy goes")
+    XCTAssertNil(MediaKeep.id("https://example.com/a.png"))
+  }
+
+  func testWhatWasBeingMadeIsTakenUpAgainWithoutAWord() async throws {
+    await signedIn()
+    let owner = store.current.id
+    store.update(owner) { c in
+      // One the server never heard of, one it has a job for.
+      c.tasks.append(MediaTask(id: "a", kind: "image", prompt: "猫", status: "in_progress"))
+      c.tasks.append(MediaTask(id: "b", kind: "image", prompt: "狗", jobId: "job-b", status: "in_progress"))
+      // One that signing out stopped.
+      c.tasks.append(MediaTask(id: "c", kind: "image", prompt: "鸟", jobId: "job-c", status: "interrupted", error: MediaCopy.signIn))
+    }
+    store.resumeMedia()
+    for _ in 0..<100 where store.current.tasks.contains(where: { $0.status != "completed" }) { try await Task.sleep(nanoseconds: 20_000_000) }
+    XCTAssertTrue(store.current.tasks.allSatisfy { $0.status == "completed" && $0.error == nil })
   }
 }

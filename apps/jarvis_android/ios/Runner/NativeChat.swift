@@ -223,7 +223,7 @@ final class ChatViewController: UIViewController {
         }
       }
     }
-    VideoCover.load = { [store] address, file in try await store.api.download(address, to: file) }
+    VideoCover.load = { [store] address, file in try await store.mediaFile(address, to: file) }
     VideoCover.normalize = { [store] address in (try? store.api.mediaURL(address))?.absoluteString ?? address }
     view.backgroundColor = appBackground
     navigationItem.largeTitleDisplayMode = .never
@@ -942,7 +942,7 @@ final class ChatViewController: UIViewController {
       return data
     }
     guard let url = resolve(address) else { throw JarvisException("地址无效") }
-    if isOurs(url) { return try await store.api.download(url.absoluteString) }
+    if isOurs(url) { return try await store.mediaData(url.absoluteString) }
     guard url.scheme == "https" else { throw JarvisException("不支持的地址") }
     let config = URLSessionConfiguration.ephemeral
     config.timeoutIntervalForRequest = 30
@@ -1056,7 +1056,7 @@ final class ChatViewController: UIViewController {
         if video, let file = await VideoCover.saved(url.absoluteString) {
           _ = try await FilesService.shared.saveToPhotos(FileSource(name: "jarvis.mp4", bytes: nil, path: file.path), mime: "video/mp4")
         } else {
-          let data = try await store.api.download(url.absoluteString)
+          let data = try await store.mediaData(url.absoluteString)
           _ = try await FilesService.shared.saveToPhotos(
             FileSource(name: video ? "jarvis.mp4" : "jarvis.png", bytes: data, path: nil), mime: video ? "video/mp4" : "image/png")
         }

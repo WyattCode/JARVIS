@@ -76,6 +76,8 @@ public final class JarvisStore: ObservableObject {
 
   private var active: [String: (requestId: String, messageId: String)] = [:]
   private var mediaActive: [String: String] = [:]
+  /// Calls and jobs of the works that were cleared: a late event of the voice session about one of them must not bring it back.
+  private var clearedVoice: Set<String> = []
   /// How long pictures and videos took on this phone, for the time a new one is said to need.
   public private(set) var mediaTimings = MediaTimings.prior
   public var timingDefaults: UserDefaults = .standard
@@ -208,16 +210,50 @@ public final class JarvisStore: ObservableObject {
       }
     }
     if api.cookie != nil { await connect() }
+    // What an earlier version wrote off when the app was closed is taken up again as well.
     for owner in conversations {
-      for task in owner.tasks where task.pending {
-        if authenticated, task.source == "voice", task.jobId != nil {
+      for task in owner.tasks where task.status == "interrupted" && task.error == "应用退出时任务没做完" {
+        updateTask(owner.id, task.id) {
+          $0.status = "in_progress"
+          $0.error = nil
+        }
+      }
+    }
+    resumeMedia()
+  }
+
+  /// Takes up every picture and video that was still being made when the app was closed (or while the server could not be
+  /// reached): the job is followed again where the server has one, and asked for again where it never got that far. Nothing
+  /// is said about it; without a connection the task waits for the next one.
+  func resumeMedia() {
+    guard authenticated, !disposed else { return }
+    // What was stopped by signing out goes on now that the person is signed in again (the card said it would).
+    for owner in conversations {
+      for task in owner.tasks where task.status == "interrupted" && (task.error == MediaCopy.signIn || task.error?.contains("已退出登录") == true) {
+        updateTask(owner.id, task.id) {
+          $0.status = "in_progress"
+          $0.error = nil
+        }
+      }
+    }
+    for owner in conversations {
+      for task in owner.tasks where task.pending && mediaActive[task.id] == nil {
+        if task.source == "voice", task.jobId != nil {
           pollVoiceTask(owner.id, task.id)
-        } else if authenticated, task.jobId != nil {
+        } else if task.jobId != nil {
           runMedia(owner.id, task.id, resume: true)
+        } else if task.source == "voice", voice?.active == true {
+          // The call is still on: its events bring the job.
+          continue
+        } else if !task.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          // Never reached the server (or its answer was lost): asked for again.
+          updateTask(owner.id, task.id) { $0.source = "http" }
+          runMedia(owner.id, task.id)
         } else {
+          // Nothing to ask again with.
           updateTask(owner.id, task.id) {
-            $0.status = "interrupted"
-            $0.error = "应用退出时任务没做完"
+            $0.status = "failed"
+            $0.error = MediaCopy.failed(task.kind)
           }
         }
       }
@@ -257,6 +293,8 @@ public final class JarvisStore: ObservableObject {
         modelSkill = ["enabled": .bool(false), "text": .string("")]
       }
       authenticated = true
+      keepMedia()
+      if initialized { resumeMedia() }
       offlineSession = false
       retryAttempts = 0
       retryTask?.cancel()
@@ -403,7 +441,7 @@ public final class JarvisStore: ObservableObject {
     for id in Array(active.keys) { cancel(id) }
     for request in mediaActive.values { api.cancel(request) }
     mediaActive.removeAll()
-    interruptPendingTasks("已退出登录；任务可能仍在服务器运行，请重新登录后检查原任务")
+    interruptPendingTasks(MediaCopy.signIn)
     scheduleSave()
   }
 
@@ -431,7 +469,7 @@ public final class JarvisStore: ObservableObject {
     do { try await api.logout() } catch { api.cookie = nil }
     for request in mediaActive.values { api.cancel(request) }
     mediaActive.removeAll()
-    interruptPendingTasks("已退出登录；任务可能仍在服务器运行，请重新登录后检查原任务")
+    interruptPendingTasks(MediaCopy.signIn)
     authenticated = false
     error = nil
     dataEpoch += 1
@@ -980,7 +1018,7 @@ public final class JarvisStore: ObservableObject {
   // MARK: Pictures and videos
 
   public func retryMedia(_ ownerId: String, _ taskId: String) async {
-    guard let task = task(ownerId, taskId), mediaActive[taskId] == nil else { return }
+    guard let task = task(ownerId, taskId), !task.removed, mediaActive[taskId] == nil else { return }
     if task.source == "voice", task.jobId != nil, task.status != "failed" {
       updateTask(ownerId, taskId) {
         $0.status = "in_progress"
@@ -1008,6 +1046,102 @@ public final class JarvisStore: ObservableObject {
       }
     }
     scheduleSave()
+  }
+
+  /// How many works there are (every picture and video of every conversation), and how many of them are still being made.
+  public var worksCount: (all: Int, running: Int) {
+    let tasks = conversations.flatMap(\.tasks).filter { !$0.removed }
+    return (tasks.count, tasks.filter(\.pending).count)
+  }
+
+  /// Clears every picture and video: the works list is emptied and the copies kept on the device go; the cards in the chats
+  /// stay where they were and say that the work was removed (the model is told the same). A running one is stopped first.
+  /// Returns how many were cleared. The files on the server stay where they are.
+  @discardableResult
+  public func clearWorks() -> Int {
+    var cleared = 0
+    for owner in conversations where owner.tasks.contains(where: { !$0.removed }) {
+      let gone = owner.tasks.filter { !$0.removed }
+      for task in gone {
+        if let request = mediaActive.removeValue(forKey: task.id) { api.cancel(request) }
+      }
+      let ids = Set(gone.map(\.id))
+      let calls = Set(gone.compactMap(\.callId))
+      clearedVoice.formUnion(calls)
+      clearedVoice.formUnion(gone.compactMap(\.jobId))
+      cleared += ids.count
+      update(owner.id) { c in
+        for i in c.tasks.indices where ids.contains(c.tasks[i].id) {
+          c.tasks[i].status = "removed"
+          c.tasks[i].urls = []
+          c.tasks[i].error = nil
+          c.tasks[i].jobId = nil
+          c.tasks[i].track = nil
+          c.tasks[i].phase = ""
+          c.tasks[i].progress = 0
+        }
+        // What the call answered named the files: the model is told of the removal instead.
+        for i in c.messages.indices { for call in calls { c.messages[i].toolResults[call] = nil } }
+      }
+    }
+    if cleared > 0 {
+      // The kept copies are no longer referred to.
+      blobsDirty = true
+      scheduleSave()
+    }
+    return cleared
+  }
+
+  // MARK: Kept copies of the works
+
+  /// The bytes of a picture or video. A file of the service is kept on the device the first time it is fetched and read from
+  /// there afterwards, so a work shows whether or not the server can be reached.
+  public func mediaData(_ address: String) async throws -> Data {
+    let id = MediaKeep.id(address)
+    if let id, let kept = (try? vault.readBlob(id)) ?? nil { return kept }
+    let data = try await api.download(address)
+    if let id { keep(id, data) }
+    return data
+  }
+
+  /// The same into a file (a video is played from one).
+  @discardableResult
+  public func mediaFile(_ address: String, to file: URL) async throws -> Int {
+    let id = MediaKeep.id(address)
+    if let id, let kept = (try? vault.readBlob(id)) ?? nil {
+      try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try kept.write(to: file, options: .atomic)
+      return kept.count
+    }
+    let size = try await api.download(address, to: file)
+    if let id, let data = try? Data(contentsOf: file, options: .mappedIfSafe) { keep(id, data) }
+    return size
+  }
+
+  private func keep(_ id: String, _ data: Data) {
+    // Only what a conversation still shows (a work cleared while its file was on the way is not kept).
+    guard !data.isEmpty, !storageBlocked, !disposed, MediaKeep.referenced(conversations).contains(id) else { return }
+    try? vault.writeBlob(id, data)
+  }
+
+  private var keeping = false
+  /// Files the server did not give in this run of the app: not asked for again at every sign-in and every finished work.
+  private var keepFailed: Set<String> = []
+
+  /// Fetches the finished works that are not on the device yet (one made while the app was away, or before copies were kept).
+  public func keepMedia() {
+    guard !keeping, authenticated, !storageBlocked, !disposed else { return }
+    keeping = true
+    Task {
+      let stored = Set((try? vault.listBlobs()) ?? [])
+      let wanted = conversations.flatMap(\.tasks).filter { $0.status == "completed" }.flatMap(\.urls)
+      for address in wanted {
+        guard let id = MediaKeep.id(address), !stored.contains(id), !keepFailed.contains(id) else { continue }
+        if disposed || !authenticated { break }
+        do { _ = try await mediaData(address) } catch { keepFailed.insert(id) }
+      }
+      keeping = false
+    }
   }
 
   public func startMedia(kind: String, prompt: String, args: [String: JSONValue] = [:]) {
@@ -1047,11 +1181,11 @@ public final class JarvisStore: ObservableObject {
       guard let task = task(ownerId, taskId) else { throw JarvisException("任务不存在") }
       let model = models.first { $0.kind == task.kind }
       if model == nil || task.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        throw JarvisException("当前模型不支持此任务，或提示词为空")
+        throw JarvisException(MediaCopy.unavailable(task.kind))
       }
       let maxSeconds = JSONValue.object(model!.metadata)["limits"]?["max_seconds"]?.int ?? 5
       if let seconds = task.args["seconds"], seconds != .null {
-        guard let n = seconds.double, n >= 1, n <= Double(maxSeconds) else { throw JarvisException("当前视频支持1至\(maxSeconds)秒") }
+        guard let n = seconds.double, n >= 1, n <= Double(maxSeconds) else { throw JarvisException("视频时长须为 1 至 \(maxSeconds) 秒。") }
       }
       var args = task.args
       args["model"] = .string(model!.id)
@@ -1059,13 +1193,21 @@ public final class JarvisStore: ObservableObject {
         requestId: request, kind: task.kind, args: args, resumeJobId: resume ? task.jobId : nil,
         onJob: { [weak self] id in
           Task { @MainActor in
-            self?.updateTask(ownerId, taskId) { $0.jobId = id }
+            self?.updateTask(ownerId, taskId) {
+              // The job that was followed is gone and a new one was made in its place: its time starts now.
+              if resume, let before = $0.jobId, before != id {
+                $0.track = MediaTrack(startedAt: began)
+                $0.progress = 0
+                $0.phase = ""
+              }
+              $0.jobId = id
+            }
             self?.scheduleSave()
           }
         },
         onProgress: { [weak self] report in Task { @MainActor in self?.noteMedia(ownerId, taskId, report) } })
       if mediaActive[taskId] != request { return }
-      if urls.isEmpty { throw JarvisException("任务没有返回作品地址") }
+      if urls.isEmpty { throw JarvisException(MediaCopy.nothing(task.kind)) }
       updateTask(ownerId, taskId) {
         $0.urls = urls
         $0.status = "completed"
@@ -1073,12 +1215,13 @@ public final class JarvisStore: ObservableObject {
         $0.progress = 100
       }
       learnTimings(ownerId, taskId)
+      keepMedia()
     } catch {
       if mediaActive[taskId] == request {
         let stuck = (error as? JarvisException)?.stalled == true
         updateTask(ownerId, taskId) {
           $0.status = stuck ? "interrupted" : "failed"
-          $0.error = (error as? JarvisException)?.message ?? "生成失败，请稍后重试原任务"
+          $0.error = (error as? JarvisException)?.message ?? MediaCopy.failed($0.kind)
           // A job that stopped reporting is not followed again: the retry submits a new one.
           if stuck { $0.jobId = nil }
         }
@@ -1149,11 +1292,11 @@ public final class JarvisStore: ObservableObject {
         }
         failures += 1
         if failures >= 20 {
-          interrupt("暂时无法检查任务，服务器可能仍在运行；请检查原任务")
+          interrupt(MediaCopy.network)
           break loop
         }
         if overdue() {
-          interrupt("任务等待时间过长，服务器可能仍在运行；请检查原任务")
+          interrupt(MediaCopy.timedOut)
           break loop
         }
         continue
@@ -1175,15 +1318,15 @@ public final class JarvisStore: ObservableObject {
           task.settleKind((state["kind"] ?? state["job_type"] ?? state["object"])?.string)
           if task.urls.isEmpty && task.kind == "video" { task.urls = ["/v1/videos/\(JarvisAPI.pathEncode(jobId))/content"] }
           task.status = task.urls.isEmpty ? "failed" : "completed"
-          task.error = task.urls.isEmpty ? "任务未返回作品地址" : nil
+          task.error = task.urls.isEmpty ? MediaCopy.nothing(task.kind) : nil
           task.progress = 100
           justCompleted = !task.urls.isEmpty
         } else if ["failed", "cancelled"].contains(status ?? "") {
           task.status = "failed"
-          task.error = "生成失败，请重试原任务"
+          task.error = MediaCopy.failed(task.kind)
         }
       }
-      if justCompleted { learnTimings(ownerId, taskId) }
+      if justCompleted { learnTimings(ownerId, taskId); keepMedia() }
       if pending() {
         let key = "\(state["progress"]?.double ?? 0)|\(state["phase"]?.string ?? "")"
         if key != lastKey || state["phase"]?.string == "queued" || status == "queued" {
@@ -1204,7 +1347,7 @@ public final class JarvisStore: ObservableObject {
           break loop
         }
       }
-      if pending() && overdue() { interrupt("任务等待时间过长，服务器可能仍在运行；请检查原任务") }
+      if pending() && overdue() { interrupt(MediaCopy.timedOut) }
       scheduleSave()
     }
     if mediaActive[taskId] == request { mediaActive[taskId] = nil }
@@ -1217,6 +1360,8 @@ public final class JarvisStore: ObservableObject {
     let call = (event["call_id"] ?? event["id"])?.string
     let jobId = event["job_id"]?.string
     let type = event["type"]?.string
+    if let call, clearedVoice.contains(call) { return }
+    if let jobId, clearedVoice.contains(jobId) { return }
     var task = owner.tasks.first { t in (call != nil && t.callId == call) || (jobId != nil && t.jobId == jobId) }
     // A job event that names neither the call nor a known job belongs to the newest voice task still waiting for one.
     if task == nil, type != "call" {
@@ -1239,6 +1384,8 @@ public final class JarvisStore: ObservableObject {
       task?.track = MediaTrack(startedAt: clock())
     }
     guard var task else { return }
+    // Cleared by the person: nothing brings it back.
+    if task.removed { return }
     if !owner.tasks.contains(where: { $0.id == task.id }) {
       update(ownerId) {
         $0.tasks.append(task)
@@ -1253,11 +1400,12 @@ public final class JarvisStore: ObservableObject {
       if task.status == "completed", task.urls.isEmpty, task.kind == "video", let id = task.jobId {
         task.urls = ["/v1/videos/\(JarvisAPI.pathEncode(id))/content"]
       }
-      task.error = task.status == "failed" ? "生成失败，请重试原任务" : nil
+      task.error = task.status == "failed" ? MediaCopy.failed(task.kind) : nil
     }
     let saved = task
     updateTask(ownerId, saved.id) { $0 = saved }
     if type == "localrouter.job.created", saved.jobId != nil { pollVoiceTask(ownerId, saved.id) }
+    if saved.status == "completed" { keepMedia() }
     scheduleSave()
   }
 

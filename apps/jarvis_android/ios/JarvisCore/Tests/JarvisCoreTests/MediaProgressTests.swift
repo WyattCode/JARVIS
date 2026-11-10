@@ -194,7 +194,7 @@ final class MediaProgressTests: XCTestCase {
     XCTAssertEqual(s.quiet, 60, accuracy: 0.001)
     XCTAssertEqual(MediaProgress.quietSpan(45), "45 秒")
     XCTAssertEqual(MediaProgress.quietSpan(190), "3 分钟")
-    XCTAssertTrue(MediaProgress.quietMessage(310).contains("5 分钟"))
+    XCTAssertEqual(MediaProgress.quietMessage(320), MediaCopy.timedOut)
   }
 
   func testARunFollowedFromTheMiddleIsNotLearnedFrom() {

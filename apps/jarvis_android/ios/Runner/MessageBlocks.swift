@@ -200,7 +200,7 @@ final class PictureBlockView: UIView {
     imageView.accessibilityLabel = alt.isEmpty ? "图片" : alt
     imageView.accessibilityTraits = .button
     spinner.translatesAutoresizingMaskIntoConstraints = false
-    failure.text = "图片暂时无法加载，点按重试"
+    failure.text = "无法加载图像。轻点以重试。"
     failure.font = .systemFont(ofSize: 13)
     failure.textColor = Palette.onSurfaceVariant
     failure.textAlignment = .center

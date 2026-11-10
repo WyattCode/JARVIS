@@ -89,8 +89,8 @@ final class MediaProgressView: UIView {
 
   /// A card whose run has ended without a picture: the bar and the clock stand still, and it says why and how far it got.
   private func drawStopped(_ task: RowData.Task) {
-    let cancelled = task.error == "已取消"
-    stage.text = cancelled ? "已取消" : "已中断"
+    let cancelled = task.error == MediaCopy.cancelled
+    stage.text = cancelled ? MediaCopy.cancelledTitle(task.kind) : MediaCopy.failedTitle(task.kind)
     stage.textColor = cancelled ? Palette.onSurfaceVariant : Palette.error
     // The bar is where it was drawn when the run ended (it is time-weighted, not the raw number); the percent says the same.
     let fraction = min(max(Self.drawn[task.id]?.value ?? task.progress / 100, 0), 0.99)
@@ -99,8 +99,8 @@ final class MediaProgressView: UIView {
     percent.textColor = Palette.onSurfaceVariant
     bar.muted = true
     bar.fraction = fraction
-    spent.text = cancelled ? "" : (task.error ?? "")
-    spent.textColor = Palette.error
+    spent.text = cancelled ? "" : (MediaCopy.shown(task.error, kind: task.kind) ?? "")
+    spent.textColor = Palette.onSurfaceVariant
     spent.font = .systemFont(ofSize: 12)
     if let track = task.track {
       left.text = "用时 " + MediaProgress.clock((track.lastAt ?? track.startedAt) - track.startedAt)
@@ -108,8 +108,8 @@ final class MediaProgressView: UIView {
       left.text = ""
     }
     left.textColor = Palette.onSurfaceVariant
-    accessibilityLabel = (task.kind == "video" ? "视频" : "图片") + (stage.text ?? "")
-    accessibilityValue = [percent.text, task.error].compactMap { $0 }.joined(separator: "，")
+    accessibilityLabel = stage.text
+    accessibilityValue = [percent.text, MediaCopy.shown(task.error, kind: task.kind)].compactMap { $0 }.joined(separator: "，")
   }
 
   private func redraw(now: Double, dt: Double) {
@@ -138,10 +138,10 @@ final class MediaProgressView: UIView {
     stage.text = name
     spent.text = "已用 " + MediaProgress.clock(snap.elapsed)
     if snap.stalled {
-      left.text = "服务器 \(MediaProgress.quietSpan(snap.quiet))没有新进展"
+      left.text = "这可能需要几分钟。"
       left.textColor = Palette.warning
     } else if snap.late || snap.remaining == nil {
-      left.text = snap.stage == .waiting ? "等待服务器开始" : "比平时慢，仍在处理"
+      left.text = snap.stage == .waiting ? "" : "这可能需要几分钟。"
       left.textColor = Palette.onSurfaceVariant
     } else {
       let span = MediaProgress.span(snap.remaining ?? 0)

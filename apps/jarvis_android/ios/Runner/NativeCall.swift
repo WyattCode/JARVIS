@@ -27,6 +27,9 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
   /// The words are brought to the sentence being said; for a few seconds after a hand has moved them they are left alone.
   private var handMovedTranscript = Date.distantPast
   private let transcriptFade = CAGradientLayer()
+  private var transcriptLead: NSLayoutConstraint!
+  private var transcriptTrail: NSLayoutConstraint!
+  private var bottomCenter: NSLayoutConstraint!
   /// The voice is saying the reply, or stopped in it: the words are brought to the line it is on.
   private var followsVoice = false
   /// Moves the lit edge 30 times a second while the voice goes (the player reports every 50 ms, and not at all while it plays
@@ -83,6 +86,18 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
   private var bag = Set<AnyCancellable>()
   private var lastYou = ""
   private var holding = false
+  /// Where the talk button stands on the foldable's inner display on its side: -1 the middle of the left half, 0 the middle of
+  /// the window (as the page opens), 1 the middle of the right half. It goes to the side the thumb comes down on.
+  private var anchor = 0
+  private var summon: UILongPressGestureRecognizer!
+  /// A held touch on the page (not on the button) is what holds the talk button now.
+  private var summonActive = false
+  private var summonStart = CGPoint.zero
+  /// While JARVIS speaks the touch has to stay a little longer before it talks over it: this is that wait.
+  private var summonTalks: DispatchWorkItem?
+  /// The finger went up far enough: letting go now throws the words away.
+  private var cancelArmed = false
+  private let halo = TouchHalo()
   /// The call has been seen going: only then does its ending close the page (it is presented before it starts).
   private var sawCall = false
 
@@ -289,7 +304,6 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
         return c
       }(),
       transcript.topAnchor.constraint(equalTo: stage.bottomAnchor, constant: 16),
-      transcript.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
       recover.centerXAnchor.constraint(equalTo: guide.centerXAnchor), recover.topAnchor.constraint(equalTo: stage.bottomAnchor, constant: 8),
       bottom.bottomAnchor.constraint(equalTo: rule.topAnchor, constant: -10),
       minimizeButton.widthAnchor.constraint(equalToConstant: 44), minimizeButton.heightAnchor.constraint(equalToConstant: 44),
@@ -301,8 +315,12 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
     ])
     // Upright: the talk button is centred under the words. On its side (a short window) the words need the room, so the button
     // stands at the left, low, and the words take the rest of the width beside it.
+    transcriptLead = transcript.leadingAnchor.constraint(equalTo: stage.leadingAnchor)
+    transcriptTrail = transcript.trailingAnchor.constraint(equalTo: stage.trailingAnchor)
+    transcriptTrail.isActive = true
+    bottomCenter = bottom.centerXAnchor.constraint(equalTo: guide.centerXAnchor)
     tallLayout = [
-      transcript.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
+      transcriptLead,
       transcript.bottomAnchor.constraint(equalTo: bottom.topAnchor, constant: -12),
       // As wide as the window less the margins, at most 380 pt (on a 440 pt phone both margins and the cap cannot hold at once, so the
       // margins are the minimum and the width the wish).
@@ -314,7 +332,7 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
         c.priority = .defaultHigh
         return c
       }(),
-      bottom.centerXAnchor.constraint(equalTo: guide.centerXAnchor),
+      bottomCenter,
     ]
     shortLayout = [
       bottom.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: 28),
@@ -328,6 +346,17 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
     tapPause.cancelsTouchesInView = false
     tapPause.delegate = self
     view.addGestureRecognizer(tapPause)
+    // A held touch in the lower half brings the talk button to that side, and counts as holding it.
+    summon = UILongPressGestureRecognizer(target: self, action: #selector(summoned(_:)))
+    summon.minimumPressDuration = 0.2
+    summon.cancelsTouchesInView = false
+    summon.delegate = self
+    view.addGestureRecognizer(summon)
+    halo.isUserInteractionEnabled = false
+    halo.frame = view.bounds
+    halo.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    view.addSubview(halo)
+    tapPause.require(toFail: summon)
     controlsHeight = controlsView.heightAnchor.constraint(equalToConstant: 122)
     controlsHeight.isActive = true
     stageTop = stage.topAnchor.constraint(equalTo: guide.topAnchor, constant: 12)
@@ -360,8 +389,143 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
   }
   private var barKind = 0
 
+  /// The foldable's inner display on its side: two halves beside each other, the right one under the right thumb.
+  private var twoHalves: Bool {
+    let size = view.bounds.size
+    return hasVerticalBar(traitCollection) && !isStraightPhone(view) && size.width > size.height && min(size.width, size.height) >= 600
+  }
+
+  /// How far from the window's middle the talk button stands for an anchor.
+  private func offset(for anchor: Int) -> CGFloat {
+    let guide = view.safeAreaLayoutGuide.layoutFrame
+    guard twoHalves else { return 0 }
+    switch anchor {
+    case -1: return (guide.minX + view.bounds.midX) / 2 - guide.midX
+    case 1: return (view.bounds.midX + guide.maxX) / 2 - guide.midX
+    default: return 0
+    }
+  }
+
+  /// The talk button is at its anchor, and the words keep a tenth of the width free there, half on each side (the lines were
+  /// too long to read).
+  private func placeForHalves() {
+    let guide = view.safeAreaLayoutGuide.layoutFrame
+    // Back in the middle whenever the two halves are gone (upright, folded, the outer display).
+    if !twoHalves, !summonActive { anchor = 0 }
+    let centre = offset(for: anchor)
+    let inset = twoHalves ? (guide.width * 0.05).rounded() : 0
+    if abs(bottomCenter.constant - centre) > 0.5 { bottomCenter.constant = centre }
+    if abs(transcriptLead.constant - inset) > 0.5 {
+      transcriptLead.constant = inset
+      transcriptTrail.constant = -inset
+    }
+  }
+
+  @objc private func summoned(_ press: UILongPressGestureRecognizer) {
+    let at = press.location(in: view)
+    switch press.state {
+    case .began:
+      summonActive = true
+      summonStart = at
+      cancelArmed = false
+      // The nearest of the three places to where the thumb is.
+      let x = at.x - view.safeAreaLayoutGuide.layoutFrame.midX
+      let next = [-1, 0, 1].min { abs(offset(for: $0) - x) < abs(offset(for: $1) - x) } ?? 0
+      if next != anchor {
+        anchor = next
+        bottomCenter.constant = offset(for: next)
+        if UIAccessibility.isReduceMotionEnabled {
+          view.layoutIfNeeded()
+        } else {
+          UIView.animate(withDuration: 0.45, delay: 0, usingSpringWithDamping: 0.82, initialSpringVelocity: 0.4, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            self.view.layoutIfNeeded()
+          }
+        }
+      } else {
+        controls.nudge()
+      }
+      // The words do not move under the thumb while it holds.
+      transcript.isScrollEnabled = false
+      guard ptt, voice.ready, !voice.previewing else {
+        // Hands-free, or no call to talk to yet: the button only comes.
+        UISelectionFeedbackGenerator().selectionChanged()
+        return
+      }
+      if voice.canStopSpeech || voice.playbackPaused {
+        // JARVIS is speaking: a thumb that only rests here must not cut it off. The button comes first; the touch talks over
+        // the reply once it has stayed twice as long.
+        UISelectionFeedbackGenerator().selectionChanged()
+        let work = DispatchWorkItem { [weak self] in
+          guard let self, self.summonActive else { return }
+          self.summonTalks = nil
+          self.startSummonHold()
+        }
+        summonTalks = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+      } else {
+        startSummonHold()
+      }
+    case .changed:
+      guard holding else { return }
+      halo.finger = at
+      // Up by a good way from where it came down (a thumb that only rolls does not count).
+      let armed = summonStart.y - at.y > 80
+      if armed != cancelArmed {
+        cancelArmed = armed
+        if armed { UIImpactFeedbackGenerator(style: .rigid).impactOccurred() } else { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+        halo.cancelling = armed
+        refresh()
+      }
+    case .ended, .cancelled, .failed:
+      guard summonActive else { return }
+      summonActive = false
+      summonTalks?.cancel()
+      summonTalks = nil
+      transcript.isScrollEnabled = true
+      let thrown = cancelArmed || press.state != .ended
+      cancelArmed = false
+      if holding {
+        halo.hide(into: thrown ? nil : controls.talkCentre(in: view))
+        endHold(send: !thrown)
+        refresh()
+      }
+    default: break
+    }
+  }
+
+  /// The held touch starts to talk: the light under the finger, tied to the button.
+  private func startSummonHold() {
+    beginHold()
+    guard holding else { return }
+    view.layoutIfNeeded()
+    halo.frame = view.bounds
+    halo.cancelling = false
+    halo.show(finger: summon.location(in: view), button: controls.talkCentre(in: view))
+  }
+
+  private func beginHold() {
+    guard voice.ready, !holding else { return }
+    voice.hold()
+    // (Not while a voice is being tried out: then nothing is held.)
+    guard voice.held else { return }
+    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    holding = true
+  }
+
+  private func endHold(send: Bool) {
+    guard holding else { return }
+    holding = false
+    if send {
+      UIImpactFeedbackGenerator(style: .light).impactOccurred()
+      voice.release()
+    } else {
+      voice.cancelHold()
+    }
+  }
+
   override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
+    placeForHalves()
     updateFade()
     // A turn between upright and sideways changes the bar without changing the traits.
     let kind = hasVerticalBar(traitCollection) ? 1 : 2
@@ -531,6 +695,13 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
 
   /// Not on the controls: the talk button, the mode choice and the buttons keep their own touches.
   func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+    // The button is brought only on the inner display on its side, by a touch in the lower half.
+    // One finger at a time (not while the button itself is held), and not under VoiceOver, where a held touch means something else.
+    if recognizer === summon,
+      !twoHalves || holding || summonActive || UIAccessibility.isVoiceOverRunning || touch.location(in: view).y < view.bounds.midY
+    {
+      return false
+    }
     var hit: UIView? = touch.view
     while let v = hit {
       if v is UIControl || v is ModeToggle || v === controls.view() { return false }
@@ -554,7 +725,7 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
       voice.needsRecovery
       ? "需要恢复语音" : voice.ready && idle ? (vad ? "正在聆听" : "按住按钮说话") : staleMute ? "按住按钮说话" : voice.status
     let shownStatus = voice.playbackPaused ? "已暂停" : nextStatus
-    let hintText = voice.playbackPaused ? "再点一下继续" : voice.error ?? (staleMute || (voice.ready && idle && !vad) ? "" : voice.hint)
+    let hintText = holding && cancelArmed ? "松开取消" : voice.playbackPaused ? "再点一下继续" : voice.error ?? (staleMute || (voice.ready && idle && !vad) ? "" : voice.hint)
     // Words change with a dissolve, and only when they really changed: the page keeps still while its state ticks over.
     if status.text != shownStatus {
       UIView.transition(with: status, duration: 0.2, options: [.transitionCrossDissolve, .allowUserInteraction]) { self.status.text = shownStatus }
@@ -632,17 +803,20 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
     }
 
     autoWorks.check(store: store, presenter: self)
-    let count = store.current.tasks.count
+    let count = store.current.tasks.filter { !$0.removed }.count
     worksLabel.text = "作品 · \(count)"
     works.accessibilityLabel = "作品，\(count) 个"
 
-    var stoppable = voice.canStopSpeech
+    // (Held by a tap, the reply is still there to be stopped or let go on.)
+    var stoppable = voice.canStopSpeech || (voice.playbackPaused && voice.ready && !voice.held)
+    if holding { halo.level = CGFloat(voice.levels.input) }
     var callReady = voice.ready
     #if DEBUG
       if Self.demoMode == "read" { stoppable = true; callReady = true }
     #endif
-    let talk = callReady ? (stoppable ? (ptt ? "点按停止 · 按住插话" : "点按停止") : ptt ? (voice.held ? "松开发送" : "按住说话") : (muted ? "已静音" : "正在聆听")) : (voice.error == nil ? "等待连接" : "等待恢复")
-    controls.apply(["ptt": ptt, "ready": callReady, "held": voice.held, "muted": muted, "label": talk, "stoppable": stoppable, "short": view.bounds.height < 520, "circular": strip])
+    let talk = callReady ? (stoppable ? (voice.playbackPaused ? "点按继续" : ptt ? "点按停止 · 按住插话" : "点按停止") : ptt ? (voice.held ? (cancelArmed ? "松开取消" : "松开发送") : "按住说话") : (muted ? "已静音" : "正在聆听")) : (voice.error == nil ? "等待连接" : "等待恢复")
+    controls.apply(["ptt": ptt, "ready": callReady, "held": voice.held, "muted": muted, "label": talk, "stoppable": stoppable, "paused": voice.playbackPaused, "thinking": callReady && voice.thinking && !voice.expressing,
+      "cancelling": holding && cancelArmed, "short": view.bounds.height < 520, "circular": strip])
     works.isHidden = count == 0 || strip
     updateStripItems(tasks: count)
     if strip, !conversing, !voice.lastYou.isEmpty || !voice.lastBot.isEmpty { setStage(conversing: true, animated: true) }
@@ -696,6 +870,7 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
   override func viewDidDisappear(_ animated: Bool) {
     super.viewDidDisappear(animated)
     stopReading()
+    halo.hide(into: nil)
   }
 
   /// Brings the line the voice is on to about a quarter of the way down the words, a line at a time, unless a hand has just
@@ -742,19 +917,12 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
 
   private func controlsSaid(_ name: String, _ value: Any?) {
     switch name {
-    case "down":
-      if voice.ready {
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        voice.hold()
-        holding = true
-      }
-    case "up":
-      if holding {
-        holding = false
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        voice.release()
-      }
-    case "cancel": if holding { holding = false; voice.cancelHold() }
+    // (While a touch on the page holds, the button's own reports are not a second hold.)
+    case "down": if !summonActive { beginHold() }
+    case "up": if !summonActive { endHold(send: true) }
+    case "cancel": if !summonActive { endHold(send: false) }
+    case "resume":
+      if voice.playbackPaused, voice.togglePlaybackPause() { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
     case "stop":
       // The talk button, as a stop key while the reply is being said: the voice stops where it is and the words stay, lit as far
       // as it got.
@@ -801,5 +969,113 @@ final class CallViewController: UIViewController, UIGestureRecognizerDelegate, U
       return
     }
     Task { _ = await voice.recover() }
+  }
+}
+
+
+/// The light under a thumb that holds the page to talk: a pale ring that swells with the voice, and a thin line from it to the
+/// talk button, so that it is plain the touch is the button. Grey when letting go would throw the words away.
+final class TouchHalo: UIView {
+  private let ring = CAShapeLayer()
+  private let soft = CAShapeLayer()
+  private let line = CAShapeLayer()
+  private var button = CGPoint.zero
+  private static let radius: CGFloat = 58
+
+  var finger = CGPoint.zero { didSet { place() } }
+  /// The voice's level, 0...1.
+  var level: CGFloat = 0 {
+    didSet {
+      let scale = 1 + min(0.35, max(0, level) * 5)
+      soft.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
+    }
+  }
+  var cancelling = false { didSet { if cancelling != oldValue { colour() } } }
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    alpha = 0
+    let circle = UIBezierPath(ovalIn: CGRect(x: -Self.radius, y: -Self.radius, width: Self.radius * 2, height: Self.radius * 2)).cgPath
+    for layer in [soft, ring] {
+      layer.path = circle
+      layer.fillColor = UIColor.clear.cgColor
+      self.layer.addSublayer(layer)
+    }
+    ring.lineWidth = 1.5
+    soft.lineWidth = 10
+    line.lineWidth = 1
+    line.fillColor = UIColor.clear.cgColor
+    line.lineDashPattern = [2, 5]
+    line.lineCap = .round
+    layer.addSublayer(line)
+    colour()
+    registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: TouchHalo, _: UITraitCollection) in view.colour() }
+  }
+
+  required init?(coder: NSCoder) { fatalError() }
+
+  private func colour() {
+    // Pale on the dark page, dark on the light one.
+    let tone = (cancelling ? Palette.onSurfaceVariant : Palette.onSurface).resolvedColor(with: traitCollection)
+    ring.strokeColor = tone.withAlphaComponent(cancelling ? 0.6 : 0.85).cgColor
+    soft.strokeColor = tone.withAlphaComponent(cancelling ? 0.1 : 0.2).cgColor
+    line.strokeColor = tone.withAlphaComponent(cancelling ? 0.25 : 0.5).cgColor
+  }
+
+  private func place() {
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    ring.position = finger
+    soft.position = finger
+    // From the ring's edge to the button, not through the ring.
+    let dx = button.x - finger.x, dy = button.y - finger.y
+    let length = max(1, hypot(dx, dy))
+    let path = UIBezierPath()
+    if length > Self.radius + 44 {
+      path.move(to: CGPoint(x: finger.x + dx / length * (Self.radius + 6), y: finger.y + dy / length * (Self.radius + 6)))
+      path.addLine(to: CGPoint(x: button.x - dx / length * 44, y: button.y - dy / length * 44))
+    }
+    line.path = path.cgPath
+    CATransaction.commit()
+  }
+
+  func show(finger: CGPoint, button: CGPoint) {
+    layer.removeAllAnimations()
+    ring.removeAllAnimations()
+    soft.removeAllAnimations()
+    self.button = button
+    self.finger = finger
+    level = 0
+    UIView.animate(withDuration: 0.18, delay: 0, options: [.beginFromCurrentState, .curveEaseOut]) { self.alpha = 1 }
+  }
+
+  /// Gone: drawn into the button when the words were sent, simply faded when they were not.
+  func hide(into point: CGPoint?) {
+    guard alpha > 0 else { return }
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    line.path = nil
+    CATransaction.commit()
+    if let point, !UIAccessibility.isReduceMotionEnabled {
+      let move = CABasicAnimation(keyPath: "position")
+      move.toValue = point
+      let shrink = CABasicAnimation(keyPath: "transform.scale")
+      shrink.toValue = 0.3
+      for layer in [ring, soft] {
+        for a in [move, shrink] {
+          a.duration = 0.2
+          a.timingFunction = CAMediaTimingFunction(name: .easeIn)
+          a.fillMode = .forwards
+          a.isRemovedOnCompletion = false
+          layer.add(a.copy() as! CABasicAnimation, forKey: a.keyPath)
+        }
+      }
+    }
+    UIView.animate(withDuration: 0.2, delay: 0, options: [.beginFromCurrentState, .curveEaseIn]) {
+      self.alpha = 0
+    } completion: { _ in
+      self.ring.removeAllAnimations()
+      self.soft.removeAllAnimations()
+    }
   }
 }

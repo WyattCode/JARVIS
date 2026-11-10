@@ -34,6 +34,8 @@ final class WorksStore: ObservableObject {
   @Published var state: WorksState
   @Published var notes: [String: SaveNote] = [:]
   @Published var copied: String?
+  /// Whether the system keeps its strip of buttons beside the content here (iPhone Duo); the sheet's host says so.
+  @Published var strip = false
   /// Sends one action to Flutter and hands back its JSON answer.
   var transport: (([String: Any], @escaping ([String: Any]?) -> Void) -> Void)?
   /// Asks Flutter for the bytes behind an address of the server.
@@ -47,6 +49,9 @@ final class WorksStore: ObservableObject {
     else { return }
     state = next
   }
+
+  /// Clears every work (the sheet has asked the person first).
+  func clearAll() { send("clearAll", "all") }
 
   func send(_ action: String, _ id: String, _ done: (([String: Any]?) -> Void)? = nil) {
     transport?(["a": action, "id": id]) { done?($0) }
@@ -101,9 +106,11 @@ final class WorksStore: ObservableObject {
 private struct ButtonLabel: View {
   let title: String
   let symbol: String
-  init(_ title: String, _ symbol: String) {
+  var tint: UIColor = Palette.onSurfaceVariant
+  init(_ title: String, _ symbol: String, tint: UIColor = Palette.onSurfaceVariant) {
     self.title = title
     self.symbol = symbol
+    self.tint = tint
   }
 
   var body: some View {
@@ -111,7 +118,7 @@ private struct ButtonLabel: View {
       Image(systemName: symbol).font(.system(.subheadline, weight: .light))
       Text(title).font(.system(size: 14))
     }
-    .foregroundStyle(Color(Palette.onSurfaceVariant))
+    .foregroundStyle(Color(tint))
     .padding(.horizontal, 8)
     .frame(minHeight: 40)
     .contentShape(Rectangle())
@@ -126,16 +133,70 @@ private extension View {
 struct WorksView: View {
   @ObservedObject var store: WorksStore
   let done: () -> Void
+  @State private var asking = false
+
+  /// What the person is told before everything is cleared: the chats lose these cards as well, and there is no way back.
+  private var warning: String {
+    let all = store.state.tasks.count
+    let running = store.state.tasks.filter(\.pending).count
+    var text = "\(all) 件作品将从此 iPhone 移除，会话中的对应内容将显示为“已移除”。"
+    if running > 0 { text += "其中 \(running) 件正在生成，将会停止。" }
+    text += "此操作无法撤销。"
+    return text
+  }
+
+  /// The clear-all button: a round one of the system's glass. In the strip's column it is the size of the strip's own buttons;
+  /// beside the title it is a small one that sits on the title's line (the touch still reaches 44 pt).
+  private func clearButton(size: CGFloat) -> some View {
+    Button {
+      asking = true
+    } label: {
+      Image(systemName: "trash").font(.system(size: 17)).foregroundStyle(Color(Palette.onSurfaceVariant))
+        .frame(width: size, height: size)
+        // The system's own glass (it answers the touch by itself), as the strip's buttons have.
+        .jarvisGlass(Circle(), interactive: true)
+        .padding((44 - size) / 2)
+        .contentShape(Rectangle())
+        .padding(-(44 - size) / 2)
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("移除全部作品")
+    .accessibilityHint("会先确认")
+  }
 
   var body: some View {
+    GeometryReader { geo in
+      // Where the system keeps a strip of buttons beside the content (iPhone Duo), the button stands in that column, at its
+      // lower end; elsewhere it is beside the title.
+      // (A straight phone on its side has an inset there too, for its sensors: that is no strip.)
+      let strip = store.strip && geo.safeAreaInsets.trailing >= 44 ? geo.safeAreaInsets.trailing : 0
+      content(inTitle: strip == 0)
+        .overlay(alignment: .bottomTrailing) {
+          if strip > 0, !store.state.tasks.isEmpty {
+            clearButton(size: 44).frame(width: strip).padding(.bottom, 14).offset(x: strip)
+          }
+        }
+    }
+    .background(Color(Palette.card))
+    .alert("移除全部作品？", isPresented: $asking) {
+      Button("移除全部", role: .destructive) { store.clearAll() }
+      Button("取消", role: .cancel) {}
+    } message: {
+      Text(warning)
+    }
+  }
+
+  private func content(inTitle: Bool) -> some View {
     VStack(spacing: 0) {
       HStack {
         Text("作品").font(.system(.title3, weight: .semibold)).foregroundStyle(Color(Palette.onSurface))
         Spacer()
+        // On the title's line, its right edge on the cards' right edge.
+        if inTitle, !store.state.tasks.isEmpty { clearButton(size: 40).padding(.trailing, -6).padding(.vertical, -8) }
       }
       .padding(.horizontal, 22)
       .padding(.top, 22)
-      .padding(.bottom, 4)
+      .padding(.bottom, 8)
       if store.state.tasks.isEmpty {
         VStack(spacing: 8) {
           Image(systemName: "photo.on.rectangle.angled").font(.system(size: 34)).foregroundStyle(Color(Palette.onSurfaceVariant))
@@ -155,7 +216,6 @@ struct WorksView: View {
         }
       }
     }
-    .background(Color(Palette.card))
   }
 }
 
@@ -198,7 +258,7 @@ private struct WorkCard: View {
           WorkProgress(work: work)
         }
         if let error = work.error, !error.isEmpty, work.status != "interrupted" {
-          Text(error).font(.system(size: 14)).foregroundStyle(Color(Palette.error))
+          Text(MediaCopy.shown(error, kind: work.kind) ?? error).font(.system(size: 14)).foregroundStyle(Color(Palette.error))
         }
       }
       .padding(.horizontal, 16).padding(.top, work.status == "completed" && work.error == nil ? 0 : 12).padding(.bottom, work.status == "completed" && work.error == nil ? 0 : 8)
@@ -225,6 +285,13 @@ private struct WorkCard: View {
   }
 
   @ViewBuilder private func buttons(_ note: SaveNote?) -> some View {
+    // A run that ended without a result: 重试 comes first, as on the chat's card.
+    if !work.pending, work.status != "completed" {
+      Button {
+        store.send("retry", work.id)
+      } label: { ButtonLabel("重试", "arrow.clockwise", tint: Palette.accent) }
+        .glassButtonStyle()
+    }
     Button {
       store.copy(work)
     } label: {
@@ -250,12 +317,6 @@ private struct WorkCard: View {
       Button {
         store.send("cancel", work.id)
       } label: { ButtonLabel("取消", "xmark") }
-        .glassButtonStyle()
-    }
-    if !work.pending, work.status != "completed" {
-      Button {
-        store.send("retry", work.id)
-      } label: { ButtonLabel("重试", "arrow.clockwise") }
         .glassButtonStyle()
     }
   }
@@ -433,7 +494,7 @@ final class PictureViewer: UIViewController, UIScrollViewDelegate, UIGestureReco
     spinner.autoresizingMask = [.flexibleTopMargin, .flexibleBottomMargin, .flexibleLeftMargin, .flexibleRightMargin]
     view.addSubview(spinner)
     spinner.startAnimating()
-    failure.text = "图片无法载入"
+    failure.text = "无法加载图像"
     failure.textColor = UIColor(white: 1, alpha: 0.7)
     failure.font = .systemFont(ofSize: 15)
     failure.sizeToFit()
@@ -622,7 +683,7 @@ enum MediaViewer {
       let file = await VideoCover.saved(url)
       done()
       guard let file else {
-        let note = UIAlertController(title: "视频无法载入", message: "请稍后再试。", preferredStyle: .alert)
+        let note = UIAlertController(title: "无法播放视频", message: "请稍后再试。", preferredStyle: .alert)
         note.addAction(UIAlertAction(title: "好", style: .default))
         WorksPresenter.top()?.present(note, animated: true)
         return

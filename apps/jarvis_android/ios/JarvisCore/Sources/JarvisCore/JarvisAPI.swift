@@ -630,7 +630,7 @@ public final class JarvisAPI: @unchecked Sendable {
       if let size = args["size"], size != .null { request["size"] = .string(show(size)) }
       request["response_format"] = .string("url")
       path = { "/v1/jobs/\(Self.pathEncode($0))" }
-      failure = "图片生成失败，请检查原任务"
+      failure = MediaCopy.failed("image")
       // Asked for as a job: the answer is the job's number at once and the picture follows, so the wait can show how far it is.
       // A service that does not know the option (400) or answers with the finished picture is served the old way.
       func create() async throws -> [String: JSONValue] {
@@ -656,7 +656,7 @@ public final class JarvisAPI: @unchecked Sendable {
     } else {
       if let seconds = args["seconds"], seconds != .null { request["seconds"] = .string(show(seconds)) }
       path = { "/v1/videos/\(Self.pathEncode($0))" }
-      failure = "视频生成失败，请检查原任务"
+      failure = MediaCopy.failed("video")
       if let resumeJobId {
         j = try await json("GET", path(resumeJobId), session: session)
         // A job the service has given up on is not looked at again (that would fail the same way every time): a new one is made.
@@ -684,7 +684,7 @@ public final class JarvisAPI: @unchecked Sendable {
       } else if Date().timeIntervalSince(lastMove) > (quietLimit ?? MediaProgress.quietLimit(kind: kind, args: args)) {
         throw JarvisException(MediaProgress.quietMessage(Date().timeIntervalSince(lastMove)), stalled: true)
       }
-      if Date() > deadline { throw JarvisException(kind == "image" ? "图片仍未完成，请稍后重新检查原任务" : "视频仍未完成，请稍后重新检查原任务") }
+      if Date() > deadline { throw JarvisException(MediaCopy.timedOut) }
       onProgress?(report(j))
       try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
       if !isCurrent(requestId, session) { throw JarvisException("任务跟踪已取消") }
@@ -705,7 +705,7 @@ public final class JarvisAPI: @unchecked Sendable {
     guard j["status"]?.string == "completed" else { throw JarvisException(failure) }
     if kind == "image" {
       let done = files(j)
-      if done.isEmpty { throw JarvisException("任务没有返回作品地址") }
+      if done.isEmpty { throw JarvisException(MediaCopy.nothing(kind)) }
       return done
     }
     return ["/v1/videos/\(Self.pathEncode(id))/content"]

@@ -511,6 +511,23 @@ final class TaskCell: MessageCell {
     place(trailing: false, width: env.userMax)
     stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
     let video = task.kind == "video"
+    // Cleared by the person: the card stays in its place and says so, with nothing to press.
+    if task.status == "removed" {
+      let note = UILabel()
+      note.font = .systemFont(ofSize: 14)
+      note.textColor = Palette.onSurfaceVariant
+      let text = NSMutableAttributedString()
+      let mark = NSTextAttachment(image: UIImage(systemName: "trash", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13))!.withTintColor(Palette.onSurfaceVariant))
+      text.append(NSAttributedString(attachment: mark))
+      text.append(NSAttributedString(string: video ? "  视频已移除" : "  图像已移除"))
+      note.attributedText = text
+      note.accessibilityLabel = video ? "视频已移除" : "图像已移除"
+      let box = UIStackView(arrangedSubviews: [note])
+      box.isLayoutMarginsRelativeArrangement = true
+      box.layoutMargins = UIEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
+      stack.addArrangedSubview(box)
+      return
+    }
     if task.status == "completed" {
       for (i, url) in task.urls.enumerated() {
         if i > 0 { stack.addArrangedSubview(spacer(4)) }
@@ -533,7 +550,7 @@ final class TaskCell: MessageCell {
       e.numberOfLines = 0
       e.font = .systemFont(ofSize: 14)
       e.textColor = Palette.error
-      e.text = error
+      e.text = MediaCopy.shown(error, kind: task.kind)
       info.addArrangedSubview(e)
     }
     if !info.arrangedSubviews.isEmpty { stack.addArrangedSubview(info) }
