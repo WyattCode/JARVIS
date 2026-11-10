@@ -262,8 +262,11 @@ private struct WorkCard: View {
         }
       }
       .padding(.horizontal, 16).padding(.top, work.status == "completed" && work.error == nil ? 0 : 12).padding(.bottom, work.status == "completed" && work.error == nil ? 0 : 8)
+      // Under a finished picture the row stands in the middle of its band (the same space above it as below).
       actions
-        .padding(.horizontal, 8).padding(.bottom, 8)
+        .padding(.horizontal, 8)
+        .padding(.top, work.status == "completed" && work.error == nil ? 4 : 0)
+        .padding(.bottom, work.status == "completed" && work.error == nil ? 4 : 8)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
