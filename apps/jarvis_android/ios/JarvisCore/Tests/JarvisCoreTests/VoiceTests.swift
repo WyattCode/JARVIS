@@ -542,11 +542,21 @@ final class VoiceTests: XCTestCase {
     XCTAssertEqual(voice.error, "语音连接未能恢复，已保留对话")
   }
 
-  func testAServerThatNeverConfirmsIsReported() async {
+  func testAServerThatNeverConfirmsIsTriedAgainThenGivenUp() async {
     voice.handshakeTimeout = 0.05
     await voice.start(store.current.id)
-    await settle({ [self] in voice.error != nil })
-    XCTAssertEqual(voice.error, "服务器尚未确认语音配置，请重试连接")
+    await settle({ [self] in voice.error != nil }, timeout: 5)
+    XCTAssertGreaterThan(api.wires.count, 1, "the connection was made again")
+    XCTAssertEqual(voice.error, "语音连接未能恢复，已保留对话")
+  }
+
+  func testTheLostConnectionsWordsAreGoneOnceItIsMadeAgain() async {
+    await startCall()
+    wire.drop()
+    await settle({ [self] in api.wires.count == 2 })
+    await settle({ [self] in !wire.sent(type: "session.update").isEmpty })
+    XCTAssertEqual(voice.status, "正在确认语音配置")
+    XCTAssertTrue(voice.hint.isEmpty, "the old line about the lost connection is not left under the new status")
   }
 
   func testASilentServerEndsTheWait() async {

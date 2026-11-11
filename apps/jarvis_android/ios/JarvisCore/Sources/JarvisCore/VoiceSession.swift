@@ -654,6 +654,8 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     ready = false
     error = nil
     status = "正在确认语音配置"
+    // (What the status of a lost connection said is over with.)
+    if error == nil { hint = "" }
     var session: [String: JSONValue] = [
       "modalities": .array([.string("audio"), .string("text")]), "input_audio_format": .string("pcm16"),
       "output_audio_format": .string("pcm16"), "model": .string(expectedModel ?? store.model),
@@ -672,11 +674,15 @@ public final class VoiceSession: ObservableObject, VoiceHost {
         ]),
     ]
     if let speaker { session["speech_model"] = .string(speaker.id) }
-    send(["type": .string("session.update"), "session": .object(session)])
+    let sent = send(["type": .string("session.update"), "session": .object(session)])
+    trace("connection: session.update \(sent ? "sent" : "NOT sent"), tries \(retries)")
     let current = run
     handshake.start(handshakeTimeout) { [weak self] in
-      guard let self, current == self.run, !self.ready else { return }
-      self.fail("服务器尚未确认语音配置，请重试连接")
+      guard let self, current == self.run, !self.ready, self.wanted, let wire = self.wire else { return }
+      self.trace(String(format: "connection: no confirmation after %.0fs, last word from the server %.1fs ago; connecting again", self.handshakeTimeout, self.now().timeIntervalSince(self.lastWireEventAt)))
+      // A connection the server does not answer on is one that is lost (a link that came back after a drop looks like this): it
+      // is made again, as for any other loss, and only given up after the usual tries.
+      Task { await self.lost(current, wire) }
     }
   }
 
@@ -1050,6 +1056,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
     case "input_audio_buffer.cleared":
       pendingClears = min(max(pendingClears - 1, 0), 100)
     case "session.updated":
+      trace("connection: session.updated received")
       pendingUpdates = min(max(pendingUpdates - 1, 0), 100)
       let s = e["session"]
       ready =
@@ -1480,6 +1487,7 @@ public final class VoiceSession: ObservableObject, VoiceHost {
 
   private func lost(_ current: Int, _ lostWire: RealtimeWire) async {
     if wire !== lostWire || current != run || !wanted { return }
+    trace(String(format: "connection: lost (try %d), last word from the server %.1fs ago", retries + 1, now().timeIntervalSince(lastWireEventAt)))
     wire = nil
     resetLevels()
     markSpeechCut()

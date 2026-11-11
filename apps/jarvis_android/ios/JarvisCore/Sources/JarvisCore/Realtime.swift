@@ -14,7 +14,7 @@ public protocol RealtimeWire: AnyObject, Sendable {
   func close() async
 }
 
-/// A WebSocket to `/v1/realtime` (sub-protocol `realtime`), pinged every 20 seconds.
+/// A WebSocket to `/v1/realtime` (sub-protocol `realtime`), pinged every 8 seconds; a ping not answered within 6 ends it.
 public final class WebSocketWire: NSObject, RealtimeWire, URLSessionWebSocketDelegate, @unchecked Sendable {
   private let task: URLSessionWebSocketTask
   private let session: URLSession
@@ -59,11 +59,22 @@ public final class WebSocketWire: NSObject, RealtimeWire, URLSessionWebSocketDel
     }
     pinger = Task { [weak self] in
       while !Task.isCancelled {
-        try? await Task.sleep(nanoseconds: 20_000_000_000)
+        try? await Task.sleep(nanoseconds: 8_000_000_000)
         guard let self, !Task.isCancelled else { return }
-        // A ping nobody answers is a dead connection: the task is ended, which reports it like any other loss.
+        // A ping nobody answers is a dead connection (the network went away without a word: the socket itself never says so,
+        // and a waiting ping has no end of its own): the task is ended, which reports it like any other loss.
+        let answer = PingAnswer()
+        let sentAt = Date()
         self.task.sendPing { [weak self] error in
+          answer.set()
           if error != nil { self?.task.cancel(with: .abnormalClosure, reason: nil) }
+        }
+        try? await Task.sleep(nanoseconds: 6_000_000_000)
+        guard !Task.isCancelled else { return }
+        // (Woken much later than asked, the app was asleep and the answer is only waiting to be read: that is no silence.)
+        if !answer.isSet, Date().timeIntervalSince(sentAt) < 10 {
+          self.task.cancel(with: .abnormalClosure, reason: nil)
+          return
         }
       }
     }
@@ -143,6 +154,14 @@ extension JarvisAPI {
     try await wire.connect(timeout: 20)
     return wire
   }
+}
+
+/// Whether a ping was answered (set from the session's queue, read from the pinger).
+final class PingAnswer: @unchecked Sendable {
+  private let lock = NSLock()
+  private var answered = false
+  func set() { lock.lock(); answered = true; lock.unlock() }
+  var isSet: Bool { lock.lock(); defer { lock.unlock() }; return answered }
 }
 
 /// Hands the session's delegate callbacks to the wire (a session keeps its delegate strongly, the wire keeps the session).
